@@ -12,9 +12,9 @@
 #   ./benchx.sh                 # standard run (~5 min)
 #   ./benchx.sh --quick         # fast (~1-2 min)
 #   ./benchx.sh --thorough      # thorough (~15 min)
-#   ./benchx.sh --no-net        # without the network test
-#   ./benchx.sh --net-mode iperf --iperf-host HOST
-#   ./benchx.sh --no-install    # install nothing, use only available tools
+#   ./benchx.sh --safe          # production-safe (no installs, low priority, latency-only net)
+#   ./benchx.sh --net-mode none # without the network test
+#   ./benchx.sh --no-install    # install nothing, use only available tools (no prompts)
 #   ./benchx.sh --yes           # do not ask about sudo (assume yes)
 #   ./benchx.sh --json out.json # path for the JSON report
 #   ./benchx.sh --only cpu,ram  # only the listed categories
@@ -37,6 +37,10 @@ VERSION="1.0.0"
 PROFILE="standard"          # quick | standard | thorough
 DO_INSTALL=1                # install what's missing
 REINSTALL=0                 # force-reinstall all required packages (--reinstall)
+CONFIRM_EACH=0              # prompt before installing/reinstalling each package (--confirm-each)
+SAFE=0                      # production-safe mode: no installs/sudo/service changes, low priority (--safe)
+DRY_RUN=0                   # print the plan and exit without doing anything (--dry-run)
+NET_EXPLICIT=0              # whether the user explicitly chose a network mode
 ASSUME_YES=0                # don't ask about sudo
 NET_MODE="speedtest"        # speedtest | latency | iperf | none
 IPERF_HOST=""
@@ -62,14 +66,18 @@ print_help() {
 benchx.sh — server performance benchmark (Linux/macOS)
 
 OPTIONS:
-  --quick | --standard | --thorough   duration profile (default: standard)
-  --no-net                             skip the network test
-  --net-mode MODE                      speedtest | latency | iperf | none
-  --iperf-host HOST                    address of your own iperf3 server (for --net-mode iperf)
+  --quick | --thorough                 duration profile (default: standard ~5 min)
+  --net-mode MODE                      network test: speedtest | latency | iperf | none
+  --iperf-host HOST                    address of your own iperf3 server (sets --net-mode iperf)
   --target DIR                         directory for the disk test (default: .)
-  --no-install                         do not install dependencies
-  --reinstall | --force-install        force-reinstall required packages (fixes a broken dpkg after Ctrl-C)
-  --yes                                agree to sudo without prompting
+  --no-install                         run with whatever tools are already present: install nothing,
+                                       no sudo, no prompts (missing metrics are just skipped)
+  --reinstall                          force-reinstall required packages (fixes a broken dpkg after Ctrl-C)
+  --confirm-each                       prompt before installing/reinstalling EACH package
+  --safe                               production-safe: implies --no-install, low CPU/IO priority,
+                                       latency-only network, skips stress test, never overwrites files
+  --dry-run                            print exactly what would happen, then exit (no changes, no benchmarks)
+  --yes | -y                           assume "yes": no prompts; allow overwriting an existing --json file
   --json PATH                          path for the JSON report
   --only CSV                           only these categories: cpu,ram,disk,net,apps,extras
   --skip CSV                           skip these categories
@@ -82,14 +90,15 @@ EOF
 while [ $# -gt 0 ]; do
   case "$1" in
     --quick) PROFILE="quick" ;;
-    --standard) PROFILE="standard" ;;
     --thorough) PROFILE="thorough" ;;
-    --no-net) NET_MODE="none" ;;
-    --net-mode) shift; NET_MODE="${1:-speedtest}" ;;
-    --iperf-host) shift; IPERF_HOST="${1:-}"; NET_MODE="iperf" ;;
+    --net-mode) shift; NET_MODE="${1:-speedtest}"; NET_EXPLICIT=1 ;;
+    --iperf-host) shift; IPERF_HOST="${1:-}"; NET_MODE="iperf"; NET_EXPLICIT=1 ;;
     --target) shift; TARGET_DIR="${1:-.}" ;;
     --no-install) DO_INSTALL=0 ;;
-    --reinstall|--force-install) REINSTALL=1 ;;
+    --reinstall) REINSTALL=1 ;;
+    --confirm-each) CONFIRM_EACH=1 ;;
+    --safe) SAFE=1 ;;
+    --dry-run) DRY_RUN=1 ;;
     --yes|-y) ASSUME_YES=1 ;;
     --json) shift; JSON_PATH="${1:-}" ;;
     --only) shift; ONLY_CATS="${1:-}" ;;
@@ -101,6 +110,12 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
+
+# production-safe mode: lock down anything that could mutate the system
+if [ "$SAFE" = 1 ]; then
+  DO_INSTALL=0                                   # never touch the package manager / sudo / configs / services
+  [ "$NET_EXPLICIT" = 0 ] && NET_MODE="latency"  # no bandwidth saturation unless explicitly requested
+fi
 
 apply_profile() {
   case "$PROFILE" in
@@ -150,6 +165,10 @@ fmt_int() {
 # division guarded against zero
 fdiv() { awk -v a="${1:-0}" -v b="${2:-0}" 'BEGIN{ if(b==0){print 0}else{printf "%.6f", a/b} }'; }
 fmul() { awk -v a="${1:-0}" -v b="${2:-0}" 'BEGIN{printf "%.6f", a*b}'; }
+
+# disk-size string ("512M"/"1G") -> MB; free space at a path -> MB (portable df -P)
+size_to_mb() { case "$1" in *[Gg]) echo $(( ${1%[Gg]} * 1024 ));; *[Mm]) echo "${1%[Mm]}";; *) echo 1024;; esac; }
+disk_free_mb() { df -Pk "$1" 2>/dev/null | awk 'NR==2{printf "%d", $4/1024}'; }
 
 # timeout (macOS has no timeout(1))
 run_timeout() {
@@ -343,6 +362,7 @@ pkg_state() {
     dnf|yum|zypper) rpm -q "$pkg" >/dev/null 2>&1 && echo installed || echo absent ;;
     pacman) pacman -Qi "$pkg" >/dev/null 2>&1 && echo installed || echo absent ;;
     apk) apk info -e "$pkg" >/dev/null 2>&1 && echo installed || echo absent ;;
+    brew) brew list --formula "$pkg" >/dev/null 2>&1 && echo installed || echo absent ;;
     *) echo installed ;;   # unknown manager — don't interfere
   esac
 }
@@ -425,6 +445,32 @@ tool_present() {
   esac
 }
 
+# Yes/No prompt read from the real terminal. No interactive tty => No.
+confirm() {
+  local q="$1" ans=""
+  printf '%s%s%s [y/N] ' "$C_BOLD$C_YELLOW" "$q" "$C_RESET"
+  if [ -t 0 ] && [ -r /dev/tty ]; then read -r ans </dev/tty || ans=""; else printf '(no interactive tty -> assuming No)\n'; return 1; fi
+  case "$(lc "${ans:-n}")" in y|yes) return 0 ;; *) return 1 ;; esac
+}
+
+# Big, prominent warning shown before force-reinstalling already-installed packages.
+danger_warning() {
+  local pkgs="$1"
+  local bar="━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  printf '\n%s%s  %s%s\n'  "$C_RED" "$C_BOLD" "$bar" "$C_RESET"
+  printf '%s%s   ⚠   WARNING — FORCED PACKAGE (RE)INSTALL CAN BE DESTRUCTIVE%s\n' "$C_RED" "$C_BOLD" "$C_RESET"
+  printf '%s%s  %s%s\n'  "$C_RED" "$C_BOLD" "$bar" "$C_RESET"
+  printf '%s  Reinstalling system packages may:%s\n' "$C_YELLOW" "$C_RESET"
+  printf '    %s•%s OVERWRITE your customized configuration files in /etc\n' "$C_YELLOW" "$C_RESET"
+  printf '    %s•%s RESTART / disrupt running services (redis, nginx, mongodb, ...) — downtime\n' "$C_YELLOW" "$C_RESET"
+  printf '    %s•%s interrupt anything currently relying on these packages\n' "$C_YELLOW" "$C_RESET"
+  printf '  %sPersonal data and databases are normally NOT deleted, but on a production%s\n' "$C_DIM" "$C_RESET"
+  printf '  %sserver this is risky — continue only if you understand the consequences.%s\n' "$C_DIM" "$C_RESET"
+  printf '  %sAlready-installed packages that would be reinstalled:%s\n' "$C_BOLD" "$C_RESET"
+  printf '    %s%s%s\n' "$C_RED$C_BOLD" "$pkgs" "$C_RESET"
+  printf '%s%s  %s%s\n'  "$C_RED" "$C_BOLD" "$bar" "$C_RESET"
+}
+
 install_deps() {
   local missing=() t pkg
   build_wishlist
@@ -487,6 +533,7 @@ install_deps() {
 
   if [ "${#need_pkg[@]}" -gt 0 ]; then
     local plist; plist="$(uniq_list "${need_pkg[@]}" | tr '\n' ' ')"
+
     # install command (taking --reinstall into account)
     local inst="$PKG_INSTALL"
     if [ "$REINSTALL" = 1 ]; then
@@ -496,18 +543,51 @@ install_deps() {
         zypper) inst="zypper install -y --force" ;;
       esac
     fi
-    spin_start "Installing packages: $plist"
-    {
-      # repair a broken dpkg after an interrupted apt (frequent Ctrl-C on Ubuntu)
-      if [ "$PKG_MGR" = apt ]; then
-        $SUDO dpkg --configure -a
-        $SUDO apt-get install -f -y
+
+    # If we are about to reinstall ALREADY-INSTALLED packages -> big warning + confirm
+    local already=() pk
+    for pk in $plist; do [ "$(pkg_state "$pk")" = installed ] && already+=("$pk"); done
+    if [ "${#already[@]}" -gt 0 ]; then
+      danger_warning "${already[*]}"
+      if [ "$ASSUME_YES" = 0 ]; then
+        if confirm "Proceed with reinstalling these already-installed packages?"; then :; else
+          note "Reinstall declined — keeping existing packages; only missing/broken ones will be installed."
+          local keep=()
+          for pk in $plist; do [ "$(pkg_state "$pk")" = installed ] || keep+=("$pk"); done
+          plist="$(uniq_list "${keep[@]}" | tr '\n' ' ')"
+        fi
       fi
-      if [ -n "$PKG_UPDATE" ]; then $SUDO $PKG_UPDATE; fi
-      # shellcheck disable=SC2086
-      $SUDO $inst $plist
-    } >"$WORKDIR/install.log" 2>&1
-    if [ $? -eq 0 ]; then spin_end ok; else spin_end fail "see $WORKDIR/install.log"; note "Some packages failed to install — they will be skipped."; fi
+    fi
+
+    if [ -n "${plist// /}" ]; then
+      # repair a possibly broken dpkg once (interrupted apt / frequent Ctrl-C on Ubuntu) + refresh index
+      if [ "$PKG_MGR" = apt ]; then
+        spin_start "Repairing dpkg state & refreshing index (apt)"
+        { $SUDO dpkg --configure -a; $SUDO apt-get install -f -y; $SUDO $PKG_UPDATE; } >"$WORKDIR/install.log" 2>&1
+        spin_end ok
+      elif [ -n "$PKG_UPDATE" ]; then
+        $SUDO $PKG_UPDATE >"$WORKDIR/install.log" 2>&1
+      fi
+
+      if [ "$CONFIRM_EACH" = 1 ]; then
+        # ask about EACH package individually
+        for pk in $plist; do
+          if [ "$ASSUME_YES" = 1 ] || confirm "(Re)install package '$pk'?"; then
+            spin_start "Installing $pk"
+            # shellcheck disable=SC2086
+            $SUDO $inst "$pk" >>"$WORKDIR/install.log" 2>&1 \
+              && spin_end ok || { spin_end fail "see $WORKDIR/install.log"; INSTALL_FAILED+=("$pk"); }
+          else
+            note "Skipped package '$pk' (declined by user)."
+          fi
+        done
+      else
+        spin_start "Installing packages: $plist"
+        # shellcheck disable=SC2086
+        $SUDO $inst $plist >>"$WORKDIR/install.log" 2>&1
+        if [ $? -eq 0 ]; then spin_end ok; else spin_end fail "see $WORKDIR/install.log"; note "Some packages failed to install — they will be skipped."; fi
+      fi
+    fi
   fi
 
   # speedtest — official Ookla CLI from tarball (no root), with fallbacks inside
@@ -765,6 +845,21 @@ bench_disk() {
   DISK_TESTDIR="$TARGET_DIR/.benchx_disk.$$"
   local testdir="$DISK_TESTDIR" mb lat
   mkdir -p "$testdir" 2>/dev/null || { note "Could not create the disk test directory in $TARGET_DIR"; DISK_TESTDIR=""; return 0; }
+
+  # free-space safety: never fill the disk on a production server
+  local need_mb avail_mb
+  need_mb="$(size_to_mb "$DISK_SIZE")"
+  avail_mb="$(disk_free_mb "$TARGET_DIR")"
+  if [ -n "$avail_mb" ] && [ "$avail_mb" -lt $(( need_mb + 512 )) ]; then
+    if [ "$avail_mb" -lt 384 ]; then
+      note "Disk test skipped: only ${avail_mb} MB free in $TARGET_DIR (need >= $(( need_mb + 512 )) MB). Use --target with more space."
+      rm -rf "$testdir" 2>/dev/null; DISK_TESTDIR=""
+      return 0
+    fi
+    local newmb=$(( avail_mb / 2 )); [ "$newmb" -gt "$need_mb" ] && newmb="$need_mb"
+    DISK_SIZE="${newmb}M"
+    note "Disk test size reduced to ${DISK_SIZE} for safety (only ${avail_mb} MB free in $TARGET_DIR)."
+  fi
 
   if have fio; then
     local direct=1 ioeng="psync"
@@ -1121,7 +1216,10 @@ bench_extras() {
   fi
 
   # stability under sustained load (throttling): burst vs sustained
-  if have sysbench; then
+  # skipped in safe mode — it deliberately pegs all cores for THERMAL_TIME
+  if [ "$SAFE" = 1 ]; then
+    note "Sustained-load stability test skipped (safe mode)."
+  elif have sysbench; then
     detect_sysbench
     spin_start "Stability under load (${THERMAL_TIME}s)"
     local burst sustained ratio
@@ -1480,11 +1578,58 @@ on_interrupt() {
 trap cleanup EXIT
 trap on_interrupt INT TERM
 
+# green banner summarizing what safe mode guarantees
+safe_banner() {
+  printf '%s%s  SAFE MODE — production-safe guarantees:%s\n' "$C_GREEN" "$C_BOLD" "$C_RESET"
+  printf '    %s✓%s no package installs, no sudo, no service changes\n'                       "$C_GREEN" "$C_RESET"
+  printf '    %s✓%s low CPU/IO priority (nice 19 / ionice idle) — will not starve production\n' "$C_GREEN" "$C_RESET"
+  printf '    %s✓%s network limited to latency (no bandwidth saturation)\n'                    "$C_GREEN" "$C_RESET"
+  printf '    %s✓%s skips the sustained full-load stress test\n'                               "$C_GREEN" "$C_RESET"
+  printf '    %s✓%s writes only to a private temp dir (+ --json); never overwrites files\n'     "$C_GREEN" "$C_RESET"
+  printf '    %s✓%s disk test checks free space first and self-limits\n'                        "$C_GREEN" "$C_RESET"
+}
+
+# --dry-run: show exactly what would happen, change nothing
+do_dry_run() {
+  section "🔎" "DRY RUN — plan only; nothing will be installed, run, or written"
+  printf '  Profile: %s    Safe mode: %s\n' "$PROFILE" "$([ "$SAFE" = 1 ] && echo on || echo off)"
+  local cats="cpu ram disk net apps extras" c en=""
+  for c in $cats; do cat_enabled "$c" && en="$en $c"; done
+  printf '  Categories: %s\n' "${en# }"
+  printf '  Network mode: %s\n' "$NET_MODE"
+  if cat_enabled disk; then
+    local need avail; need="$(size_to_mb "$DISK_SIZE")"; avail="$(disk_free_mb "$TARGET_DIR")"
+    printf '  Disk test: ~%s MB written to %s (free: %s MB), unique temp file, removed after\n' "$need" "$TARGET_DIR" "${avail:-?}"
+  fi
+  build_wishlist
+  local wl t pkg miss="" sysneed=""
+  wl="$(uniq_list "${WANT_TOOLS[@]}")"
+  for t in $wl; do
+    tool_present "$t" && continue
+    miss="$miss $t"
+    [ "$t" = speedtest ] && continue
+    pkg="$(pkg_for "$t")"; [ -n "$pkg" ] && sysneed="$sysneed $pkg"
+  done
+  if [ "$DO_INSTALL" = 0 ]; then
+    printf '  Install: %sDISABLED%s — missing tools will be skipped:%s\n' "$C_YELLOW" "$C_RESET" "${miss:- none}"
+  else
+    printf '  Would install via %s:%s\n' "$PKG_MGR" "${sysneed:- none}"
+    [ -n "$sysneed" ] && [ "$NEEDS_ROOT" = 1 ] && printf '    (would request sudo once)\n'
+  fi
+  printf '  JSON report: %s\n' "${JSON_PATH:-<none>}"
+  printf '\n  %sNo benchmarks were run, no packages installed, no files written.%s\n' "$C_DIM" "$C_RESET"
+}
+
 # ── main ─────────────────────────────────────────────────────────────────────────
 main() {
   if [ "$MODE" = "compare" ]; then
     do_compare
     exit 0
+  fi
+
+  # never silently overwrite an existing report
+  if [ -n "$JSON_PATH" ] && [ -e "$JSON_PATH" ] && [ "$ASSUME_YES" != 1 ]; then
+    die "Refusing to overwrite existing file: $JSON_PATH  (pass --yes to allow)"
   fi
 
   WORKDIR="$(mktemp -d 2>/dev/null || echo "/tmp/benchx.$$")"
@@ -1494,8 +1639,20 @@ main() {
   printf '  %sOS:%s %s %s   %sProfile:%s %s\n\n' "$C_GREY" "$C_RESET" "$OS" "$ARCH" "$C_GREY" "$C_RESET" "$PROFILE"
 
   detect_pkg
+
+  if [ "$SAFE" = 1 ]; then
+    # drop our priority so we never starve production (nice 19 needs no root)
+    renice 19 "$$" >/dev/null 2>&1
+    [ "$OS" = "Linux" ] && have ionice && ionice -c3 -p "$$" >/dev/null 2>&1
+    safe_banner
+    printf '\n'
+  fi
+  [ "$(id -u)" = 0 ] && note "Running as root — not required for benchmarking; a normal user is safer."
+
   collect_sysinfo
   detect_sysbench
+
+  if [ "$DRY_RUN" = 1 ]; then do_dry_run; exit 0; fi
 
   section "📦" "Preparing dependencies"
   install_deps

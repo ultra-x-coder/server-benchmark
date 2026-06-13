@@ -15,11 +15,37 @@
 
 Un único script de bash que mide CPU, RAM, disco y red, además del rendimiento real de
 **nginx / redis / mongodb / node.js**. Instala sus propias dependencias, imprime un informe limpio en la
-terminal, guarda un informe JSON y puede comparar dos servidores/ejecuciones.
+terminal, guarda un informe JSON y puede comparar dos servidores. Está diseñado para ser **seguro de ejecutar en servidores de producción**.
 
 ```bash
-./benchx.sh                 # ejecución estándar (~5 min)
+chmod +x benchx.sh
+./benchx.sh            # ejecución estándar (~5 min)
+./benchx.sh --safe     # ejecución segura para producción (recomendada en servidores en vivo)
 ```
+
+## Ejecución en servidores de producción
+
+Usa **`--safe`** (previsualiza antes con `--dry-run`):
+
+```bash
+./benchx.sh --safe --dry-run   # muestra exactamente qué ocurriría y sale
+./benchx.sh --safe             # ejecución segura
+./benchx.sh --safe --skip disk # ejecución segura sin ninguna escritura en disco
+```
+
+`--safe` garantiza:
+
+- **sin instalación de paquetes, sin `sudo`, sin cambios en servicios** — tus configuraciones en `/etc` y los daemons en ejecución nunca se tocan;
+- **baja prioridad de CPU/IO** (`nice 19` + `ionice -c3`) — la producción conserva la CPU y el disco;
+- **red limitada a la latencia** (solo ping, sin saturar el ancho de banda);
+- **omite la prueba de estrés a plena carga sostenida**;
+- **escribe solo en un directorio temporal privado** (+ `--json`) y **nunca sobrescribe archivos existentes**;
+- la **prueba de disco comprueba primero el espacio libre** y se reduce/omite en lugar de llenar el disco.
+
+Estas protecciones también actúan fuera de `--safe` donde importa: el script no sobrescribe un archivo `--json`
+existente (sin `--yes`), no sobrescribe ningún archivo existente (solo escribe en rutas temporales únicas),
+comprueba el espacio libre antes de la prueba de disco, vincula los servidores de apps a `127.0.0.1` en un puerto
+alto aleatorio y **Ctrl-C lo detiene de inmediato y limpia** (sin servidores huérfanos ni archivos temporales residuales).
 
 ## Qué mide
 
@@ -27,33 +53,33 @@ terminal, guarda un informe JSON y puede comparar dos servidores/ejecuciones.
 |-----------|----------|--------------|
 | **CPU** | un núcleo, varios núcleos, escalado por hilos, AES-256 (TLS), SHA-256 | `sysbench`, `openssl` |
 | **RAM** | ancho de banda de lectura/escritura (un hilo y múltiples hilos), ancho de banda memcpy, **latencia de acceso aleatorio** (ns) | `sysbench`, `mbw`, pointer-chase compilado al vuelo |
-| **Disco** | tipo (NVMe/SSD/HDD), IOPS de lectura/escritura aleatorias (4k, qd32), lectura/escritura secuencial (MB/s), latencia (media) | `fio` (alternativa: `dd` + `ioping`) |
+| **Disco** | tipo (NVMe/SSD/HDD), IOPS de lectura/escritura aleatorias (4k, qd32), lectura/escritura secuencial (MB/s), latencia | `fio` (alternativa: `dd` + `ioping`) |
 | **Red** | descarga/subida (Mbit/s), latencia en reposo, ping/jitter/pérdida hacia 1.1.1.1 y 8.8.8.8 | Ookla `speedtest` / `speedtest-cli`, `ping`, opcional `iperf3` |
 | **Apps** | Redis SET/GET ops/s, Node CPU + HTTP req/s, Nginx estático req/s, Mongo insert/find ops/s | `redis-benchmark`, `node`+`wrk`, `nginx`+`wrk`, `mongod`+`mongosh` |
-| **Extras** | cambio de contexto/hilos, **estabilidad bajo carga sostenida** (throttling térmico), tasa de creación de procesos | `sysbench`, integrados |
+| **Extras** | cambio de contexto/hilos, estabilidad bajo carga sostenida (throttling térmico), tasa de creación de procesos | `sysbench`, integrados |
 
 ### Índices de carga de trabajo
 
 Al final, el script calcula índices normalizados (≈1000 = una vCPU de nube de referencia, más alto = más rápido)
 para **nginx / redis / mongodb / node.js** más una puntuación global. Cada índice es una mezcla ponderada de
 métricas primarias (p. ej., para redis: un núcleo 40% + latencia de RAM 25% + ancho de banda de RAM 10% + el
-benchmark real de redis GET 25%). Un índice solo se muestra cuando se ha recopilado ≥50% de su peso (para que nunca
-induzca a error). Estos índices son la forma cómoda de responder «cuánto más rápido es el servidor A que el servidor B
-para redis». Una marca `≈` significa que el índice es una estimación basada solo en métricas sintéticas
-(el benchmark real del motor no se ejecutó).
+benchmark real de redis GET 25%). Un índice se muestra **solo si el benchmark real del motor se ejecutó realmente** —
+si `mongod` no está disponible, no aparece ningún índice de MongoDB. Estos índices son la forma cómoda de responder
+«cuánto más rápido es el servidor A que el servidor B para redis».
 
 ## Uso
 
 ```bash
-chmod +x benchx.sh
 ./benchx.sh                       # estándar (~5 min)
 ./benchx.sh --quick               # rápido (~1-2 min)
 ./benchx.sh --thorough            # exhaustivo (~15 min)
-./benchx.sh --json server-a.json  # guardar informe
-./benchx.sh --no-net              # omitir la prueba de red
+./benchx.sh --safe                # seguro para producción
+./benchx.sh --dry-run             # imprime el plan y sale (sin cambios)
+./benchx.sh --no-install          # usa solo las herramientas ya presentes (sin instalar, sin preguntas)
+./benchx.sh --net-mode none       # omite la prueba de red
+./benchx.sh --json server-a.json  # guarda el informe
 ./benchx.sh --only cpu,ram        # solo estas categorías
-./benchx.sh --skip apps,net       # omitir categorías
-./benchx.sh --net-mode iperf --iperf-host 10.0.0.5   # usar tu propio servidor iperf3 en lugar de speedtest
+./benchx.sh --skip apps,net       # omite categorías
 ```
 
 ### Comparar dos servidores
@@ -73,17 +99,21 @@ Imprime una tabla de métricas e índices con la diferencia porcentual (verde = 
 
 | Indicador | Propósito |
 |-----------|-----------|
-| `--quick` / `--standard` / `--thorough` | perfil de duración |
-| `--no-net` | omitir la prueba de red |
-| `--net-mode speedtest\|latency\|iperf\|none` | modo de la prueba de red |
-| `--iperf-host HOST` | dirección de tu propio servidor iperf3 |
+| `--quick` / `--thorough` | perfil de duración (por defecto standard, ~5 min) |
+| `--safe` | seguro para producción: sin instalaciones/sudo/cambios de servicios, baja prioridad de CPU/IO, solo latencia, omite la prueba de estrés, no sobrescribe archivos |
+| `--dry-run` | imprime exactamente qué ocurriría y sale (sin cambios, sin benchmarks) |
+| `--no-install` | ejecuta solo con las herramientas ya presentes: sin instalar, sin sudo, sin preguntas |
+| `--reinstall` | reinstala a la fuerza los paquetes requeridos (también repara un dpkg roto tras un Ctrl-C) |
+| `--confirm-each` | pregunta antes de instalar/reinstalar cada paquete |
+| `--yes` / `-y` | asume «sí»: sin preguntas; también permite sobrescribir un archivo `--json` existente |
+| `--net-mode MODE` | modo de la prueba de red: `speedtest` \| `latency` \| `iperf` \| `none` |
+| `--iperf-host HOST` | dirección de tu propio servidor iperf3 (establece `--net-mode iperf`) |
 | `--target DIR` | directorio para la prueba de disco (por defecto `.`) |
-| `--no-install` | no instalar nada, usar solo las herramientas ya presentes |
-| `--yes` | responder «sí» automáticamente al aviso de sudo |
-| `--json PATH` | ruta para el informe JSON |
 | `--only CSV` / `--skip CSV` | filtro de categorías: `cpu,ram,disk,net,apps,extras` |
+| `--json PATH` | ruta para el informe JSON |
 | `--no-color` | sin color (también respeta `NO_COLOR`) |
-| `--compare A.json B.json` | comparar dos informes |
+| `--compare A.json B.json` | compara dos informes y sale |
+| `-h` / `--help` | ayuda |
 
 ## Dependencias y root
 
@@ -91,10 +121,12 @@ El script detecta automáticamente el gestor de paquetes (`apt`/`dnf`/`yum`/`pac
 `brew` en macOS) e instala lo que falta.
 
 - En Linux, instalar paquetes del sistema requiere **root** — el script pide permiso para usar `sudo` **una sola vez**.
-- Si lo rechazas, solo se instala lo que está disponible **sin root** (p. ej., `speedtest-cli` mediante `pip --user`);
-  todo lo demás se omite con elegancia y se anota en la sección «Notas».
+- Si lo rechazas (o con `--no-install`/`--safe`), solo se usa lo que está disponible **sin root**; todo lo demás se
+  omite con elegancia y se anota. La **CLI oficial de Ookla `speedtest` se instala sin root desde su tarball** (en `~/.local/bin`).
 - En macOS, `brew` no necesita root.
-- `--no-install` desactiva por completo la instalación.
+- `--reinstall` repara un estado `dpkg` roto (p. ej., tras un `apt` interrumpido) y reinstala los paquetes.
+  Muestra **primero un aviso prominente** — reinstalar puede sobrescribir configuraciones personalizadas en `/etc` y
+  reiniciar servicios; no elimina tus datos, pero en un servidor de producción es preferible `--no-install`/`--safe`.
 
 Cualquier métrica no disponible simplemente se omite (✓ hecho, ∅ omitido, ✗ error) — el script nunca se bloquea.
 
@@ -124,8 +156,9 @@ Cualquier métrica no disponible simplemente se omite (✓ hecho, ∅ omitido, �
 ## Notas sobre la precisión
 
 - Ejecútalo en una máquina inactiva; con «vecinos ruidosos» (virtualización) los resultados varían — usa `--thorough`.
-- La prueba de disco escribe un archivo temporal en `--target` (el directorio actual por defecto) y lo elimina.
-- Speedtest contacta servidores externos de Ookla; si no es deseable, usa `--net-mode iperf` o `--no-net`.
+  Nota: `--safe` se ejecuta con baja prioridad, por lo que sus números reflejan la capacidad libre, no el pico.
+- La prueba de disco escribe un archivo temporal único en `--target` (el directorio actual por defecto) y lo elimina.
+- Speedtest contacta servidores externos de Ookla; si no es deseable, usa `--net-mode latency` o `--net-mode none`.
 - Los benchmarks de apps inician servicios en `127.0.0.1` en un puerto alto aleatorio y los detienen al terminar.
 
 ## Licencia

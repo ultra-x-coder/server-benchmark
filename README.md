@@ -15,11 +15,37 @@
 
 A single bash script that measures CPU, RAM, disk, and network, plus the real-world performance of
 **nginx / redis / mongodb / node.js**. It installs its own dependencies, prints a clean terminal report,
-saves a JSON report, and can compare two servers/runs.
+saves a JSON report, and can compare two servers. It is designed to be **safe to run on production servers**.
 
 ```bash
-./benchx.sh                 # standard run (~5 min)
+chmod +x benchx.sh
+./benchx.sh            # standard run (~5 min)
+./benchx.sh --safe     # production-safe run (recommended on live servers)
 ```
+
+## Running on production servers
+
+Use **`--safe`** (preview first with `--dry-run`):
+
+```bash
+./benchx.sh --safe --dry-run   # show exactly what would happen, then exit
+./benchx.sh --safe             # safe run
+./benchx.sh --safe --skip disk # safe run with zero disk writes
+```
+
+`--safe` guarantees:
+
+- **no package installs, no `sudo`, no service changes** — your `/etc` configs and running daemons are never touched;
+- **low CPU/IO priority** (`nice 19` + `ionice -c3`) — production keeps the CPU and disk;
+- **network limited to latency** (ping only, no bandwidth saturation);
+- **skips the sustained full-load stress test**;
+- **writes only to a private temp dir** (+ `--json`) and **never overwrites existing files**;
+- the **disk test checks free space first** and shrinks or skips itself instead of filling the disk.
+
+These safeguards are also active outside `--safe` where it matters: the script never overwrites an existing
+`--json` file (without `--yes`), never overwrites existing files (it writes to unique temp paths only), checks
+disk free space before the disk test, binds app servers to `127.0.0.1` on a random high port, and **Ctrl-C stops
+it immediately and cleans up** (no orphaned servers or leftover temp files).
 
 ## What it measures
 
@@ -27,32 +53,33 @@ saves a JSON report, and can compare two servers/runs.
 |----------|---------|-------|
 | **CPU** | single-core, multi-core, thread scaling, AES-256 (TLS), SHA-256 | `sysbench`, `openssl` |
 | **RAM** | read/write bandwidth (single- & multi-threaded), memcpy bandwidth, **random-access latency** (ns) | `sysbench`, `mbw`, compiled pointer-chase |
-| **Disk** | type (NVMe/SSD/HDD), random read/write IOPS (4k, qd32), sequential read/write (MB/s), latency (avg) | `fio` (fallback: `dd` + `ioping`) |
+| **Disk** | type (NVMe/SSD/HDD), random read/write IOPS (4k, qd32), sequential read/write (MB/s), latency | `fio` (fallback: `dd` + `ioping`) |
 | **Network** | download / upload (Mbit/s), idle latency, ping/jitter/loss to 1.1.1.1 and 8.8.8.8 | Ookla `speedtest` / `speedtest-cli`, `ping`, optional `iperf3` |
 | **Apps** | Redis SET/GET ops/s, Node CPU + HTTP req/s, Nginx static req/s, Mongo insert/find ops/s | `redis-benchmark`, `node`+`wrk`, `nginx`+`wrk`, `mongod`+`mongosh` |
-| **Extras** | context-switch/threads, **sustained-load stability** (thermal throttling), process-spawn rate | `sysbench`, builtins |
+| **Extras** | context-switch/threads, sustained-load stability (thermal throttling), process-spawn rate | `sysbench`, builtins |
 
 ### Workload indexes
 
-At the end, the script computes normalized indexes (≈1000 = a reference cloud vCPU, higher = faster) for
+At the end the script computes normalized indexes (≈1000 = a reference cloud vCPU, higher = faster) for
 **nginx / redis / mongodb / node.js** plus an overall score. Each index is a weighted blend of primary metrics
 (e.g. for redis: single-core 40% + RAM latency 25% + RAM bandwidth 10% + the real redis GET benchmark 25%).
-An index is shown only when ≥50% of its weight was collected (so it never misleads). These indexes are the
-convenient way to answer "how much faster is server A than server B for redis". A `≈` marker means the index
-is an estimate from synthetic metrics only (the real engine benchmark did not run).
+An index is shown **only when the engine's real benchmark actually ran** — if `mongod` is unavailable, no
+MongoDB index appears. These indexes are the convenient way to answer "how much faster is server A than server B
+for redis".
 
 ## Usage
 
 ```bash
-chmod +x benchx.sh
 ./benchx.sh                       # standard (~5 min)
 ./benchx.sh --quick               # fast (~1-2 min)
 ./benchx.sh --thorough            # thorough (~15 min)
+./benchx.sh --safe                # production-safe
+./benchx.sh --dry-run             # print the plan and exit (no changes, no benchmarks)
+./benchx.sh --no-install          # use only tools already present (install nothing, no prompts)
+./benchx.sh --net-mode none       # skip the network test
 ./benchx.sh --json server-a.json  # save report
-./benchx.sh --no-net              # skip network test
 ./benchx.sh --only cpu,ram        # only these categories
 ./benchx.sh --skip apps,net       # skip categories
-./benchx.sh --net-mode iperf --iperf-host 10.0.0.5   # use your own iperf3 server instead of speedtest
 ```
 
 ### Comparing two servers
@@ -66,23 +93,27 @@ chmod +x benchx.sh
 ./benchx.sh --compare a.json b.json
 ```
 
-This prints a table of metrics and indexes with the percentage difference (green = B is faster, red = slower).
+Prints a table of metrics and indexes with the percentage difference (green = B is faster, red = slower).
 
 ## Options
 
 | Flag | Purpose |
 |------|---------|
-| `--quick` / `--standard` / `--thorough` | duration profile |
-| `--no-net` | skip the network test |
-| `--net-mode speedtest\|latency\|iperf\|none` | network test mode |
-| `--iperf-host HOST` | address of your own iperf3 server |
-| `--target DIR` | directory for the disk test (default `.`) |
-| `--no-install` | do not install anything, use only the tools already present |
-| `--yes` | assume "yes" to the sudo prompt |
-| `--json PATH` | path for the JSON report |
+| `--quick` / `--thorough` | duration profile (default: standard, ~5 min) |
+| `--safe` | production-safe: no installs/sudo/service changes, low CPU/IO priority, latency-only network, skips the stress test, never overwrites files |
+| `--dry-run` | print exactly what would happen, then exit (no changes, no benchmarks) |
+| `--no-install` | run with whatever tools are already present: install nothing, no sudo, no prompts |
+| `--reinstall` | force-reinstall required packages (also repairs a broken dpkg after a Ctrl-C) |
+| `--confirm-each` | prompt before installing/reinstalling each package |
+| `--yes` / `-y` | assume "yes": no prompts; also allows overwriting an existing `--json` file |
+| `--net-mode MODE` | network test mode: `speedtest` \| `latency` \| `iperf` \| `none` |
+| `--iperf-host HOST` | address of your own iperf3 server (sets `--net-mode iperf`) |
+| `--target DIR` | directory for the disk test (default: `.`) |
 | `--only CSV` / `--skip CSV` | category filter: `cpu,ram,disk,net,apps,extras` |
+| `--json PATH` | path for the JSON report |
 | `--no-color` | no color (also honors `NO_COLOR`) |
-| `--compare A.json B.json` | compare two reports |
+| `--compare A.json B.json` | compare two reports and exit |
+| `-h` / `--help` | help |
 
 ## Dependencies and root
 
@@ -90,10 +121,13 @@ The script auto-detects your package manager (`apt`/`dnf`/`yum`/`pacman`/`zypper
 and installs what is missing.
 
 - On Linux, installing system packages needs **root** — the script asks **once** for permission to use `sudo`.
-- If you decline, only what is available **without root** is installed (e.g. `speedtest-cli` via `pip --user`);
-  everything else is skipped gracefully and noted in the "Notes" section.
+- If you decline (or pass `--no-install`/`--safe`), only what is available **without root** is used; everything
+  else is skipped gracefully and noted. The official **Ookla `speedtest` CLI is installed from its tarball
+  without root** (into `~/.local/bin`).
 - On macOS, `brew` does not need root.
-- `--no-install` disables installation entirely.
+- `--reinstall` repairs a broken `dpkg` state (e.g. after an interrupted `apt`) and force-reinstalls packages.
+  It shows a **prominent warning first** — reinstalling can overwrite customized `/etc` configs and restart
+  services; it does not delete your data, but on a production server prefer `--no-install`/`--safe`.
 
 Any unavailable metric is simply skipped (✓ done, ∅ skipped, ✗ error) — the script never crashes.
 
@@ -123,8 +157,9 @@ Any unavailable metric is simply skipped (✓ done, ∅ skipped, ✗ error) — 
 ## Accuracy notes
 
 - Run it on an idle machine; on noisy neighbors (virtualization) results vary — use `--thorough`.
-- The disk test writes a temporary file into `--target` (the current directory by default) and removes it.
-- Speedtest contacts external Ookla servers; use `--net-mode iperf` or `--no-net` if that is undesirable.
+  Note that `--safe` runs at low priority, so its numbers reflect spare capacity rather than peak throughput.
+- The disk test writes a unique temporary file into `--target` (the current directory by default) and removes it.
+- Speedtest contacts external Ookla servers; use `--net-mode latency` or `--net-mode none` if that is undesirable.
 - App benchmarks start services on `127.0.0.1` on a random high port and shut them down when finished.
 
 ## License
