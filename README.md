@@ -1,95 +1,109 @@
-# benchx — бенчмарк производительности сервера (Linux / macOS)
+# benchx — server performance benchmark (Linux / macOS)
 
-Один bash-скрипт, который измеряет CPU, RAM, диск, сеть и реальную производительность под
-**nginx / redis / mongodb / node.js**, ставит зависимости сам, печатает красивый отчёт в терминал,
-сохраняет JSON и умеет сравнивать два сервера/прогона.
+![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
+![Shell](https://img.shields.io/badge/shell-bash%203.2%2B-121011?logo=gnubash&logoColor=white)
+![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS-blue)
+![Ubuntu](https://img.shields.io/badge/Ubuntu-E95420?logo=ubuntu&logoColor=white)
+![Debian](https://img.shields.io/badge/Debian-A81D33?logo=debian&logoColor=white)
+![RHEL/CentOS](https://img.shields.io/badge/RHEL%2FCentOS-EE0000?logo=redhat&logoColor=white)
+![Fedora](https://img.shields.io/badge/Fedora-51A2DA?logo=fedora&logoColor=white)
+![Arch](https://img.shields.io/badge/Arch-1793D1?logo=archlinux&logoColor=white)
+![openSUSE](https://img.shields.io/badge/openSUSE-73BA25?logo=opensuse&logoColor=white)
+![No agent](https://img.shields.io/badge/agent-not_required-success)
+
+**English** · [简体中文](README.zh.md) · [Русский](README.ru.md) · [한국어](README.ko.md) · [日本語](README.ja.md) · [Deutsch](README.de.md) · [Italiano](README.it.md) · [Español](README.es.md)
+
+A single bash script that measures CPU, RAM, disk, and network, plus the real-world performance of
+**nginx / redis / mongodb / node.js**. It installs its own dependencies, prints a clean terminal report,
+saves a JSON report, and can compare two servers/runs.
 
 ```bash
-./benchx.sh                 # стандартный прогон (~5 мин)
+./benchx.sh                 # standard run (~5 min)
 ```
 
-## Что измеряется
+## What it measures
 
-| Категория | Метрики | Инструменты |
-|-----------|---------|-------------|
-| **CPU** | single-core, multi-core, масштабирование по потокам, AES-256 (TLS), SHA-256 | `sysbench`, `openssl` |
-| **RAM** | полоса записи/чтения (1 поток и многопоточно), полоса memcpy, **латентность случайного доступа** (нс) | `sysbench`, `mbw`, компилируемый pointer-chase |
-| **Диск** | тип (NVMe/SSD/HDD), random read/write IOPS (4k, qd32), последовательные read/write (МБ/с), латентность (avg) | `fio` (fallback: `dd` + `ioping`) |
-| **Сеть** | download / upload (Мбит/с), idle-latency, ping/jitter/loss до 1.1.1.1 и 8.8.8.8 | Ookla `speedtest` / `speedtest-cli`, `ping`, опц. `iperf3` |
-| **Приложения** | Redis SET/GET ops/s, Node CPU + HTTP req/s, Nginx статика req/s, Mongo insert/find ops/s | `redis-benchmark`, `node`+`wrk`, `nginx`+`wrk`, `mongod`+`mongosh` |
-| **Дополнительно** | context-switch/threads, **стабильность под нагрузкой** (троттлинг), спавн процессов | `sysbench`, builtin |
+| Category | Metrics | Tools |
+|----------|---------|-------|
+| **CPU** | single-core, multi-core, thread scaling, AES-256 (TLS), SHA-256 | `sysbench`, `openssl` |
+| **RAM** | read/write bandwidth (single- & multi-threaded), memcpy bandwidth, **random-access latency** (ns) | `sysbench`, `mbw`, compiled pointer-chase |
+| **Disk** | type (NVMe/SSD/HDD), random read/write IOPS (4k, qd32), sequential read/write (MB/s), latency (avg) | `fio` (fallback: `dd` + `ioping`) |
+| **Network** | download / upload (Mbit/s), idle latency, ping/jitter/loss to 1.1.1.1 and 8.8.8.8 | Ookla `speedtest` / `speedtest-cli`, `ping`, optional `iperf3` |
+| **Apps** | Redis SET/GET ops/s, Node CPU + HTTP req/s, Nginx static req/s, Mongo insert/find ops/s | `redis-benchmark`, `node`+`wrk`, `nginx`+`wrk`, `mongod`+`mongosh` |
+| **Extras** | context-switch/threads, **sustained-load stability** (thermal throttling), process-spawn rate | `sysbench`, builtins |
 
-### Workload-индексы
+### Workload indexes
 
-В конце считаются нормированные индексы (≈1000 = референсный облачный vCPU, выше = быстрее) для
-**nginx / redis / mongodb / node.js** и общий. Каждый индекс — взвешенная комбинация первичных метрик
-(например, для redis: single-core 40% + латентность RAM 25% + полоса RAM 10% + реальный redis GET 25%).
-Индекс показывается, только если собрано ≥50% веса (иначе не вводим в заблуждение). Именно эти индексы
-удобно сравнивать между серверами, чтобы понять «насколько сервер A быстрее сервера B под redis».
+At the end, the script computes normalized indexes (≈1000 = a reference cloud vCPU, higher = faster) for
+**nginx / redis / mongodb / node.js** plus an overall score. Each index is a weighted blend of primary metrics
+(e.g. for redis: single-core 40% + RAM latency 25% + RAM bandwidth 10% + the real redis GET benchmark 25%).
+An index is shown only when ≥50% of its weight was collected (so it never misleads). These indexes are the
+convenient way to answer "how much faster is server A than server B for redis". A `≈` marker means the index
+is an estimate from synthetic metrics only (the real engine benchmark did not run).
 
-## Запуск
+## Usage
 
 ```bash
 chmod +x benchx.sh
-./benchx.sh                       # стандарт (~5 мин)
-./benchx.sh --quick               # быстро (~1-2 мин)
-./benchx.sh --thorough            # тщательно (~15 мин)
-./benchx.sh --json server-a.json  # сохранить отчёт
-./benchx.sh --no-net              # без сетевого теста
-./benchx.sh --only cpu,ram        # только указанные категории
-./benchx.sh --skip apps,net       # пропустить категории
-./benchx.sh --net-mode iperf --iperf-host 10.0.0.5   # свой iperf3-сервер вместо speedtest
+./benchx.sh                       # standard (~5 min)
+./benchx.sh --quick               # fast (~1-2 min)
+./benchx.sh --thorough            # thorough (~15 min)
+./benchx.sh --json server-a.json  # save report
+./benchx.sh --no-net              # skip network test
+./benchx.sh --only cpu,ram        # only these categories
+./benchx.sh --skip apps,net       # skip categories
+./benchx.sh --net-mode iperf --iperf-host 10.0.0.5   # use your own iperf3 server instead of speedtest
 ```
 
-### Сравнение двух серверов
+### Comparing two servers
 
 ```bash
-# на сервере A:
+# on server A:
 ./benchx.sh --json a.json
-# на сервере B:
+# on server B:
 ./benchx.sh --json b.json
-# где угодно:
+# anywhere:
 ./benchx.sh --compare a.json b.json
 ```
 
-Покажет таблицу метрик и индексов с разницей в % (зелёный = B быстрее, красный = медленнее).
+This prints a table of metrics and indexes with the percentage difference (green = B is faster, red = slower).
 
-## Опции
+## Options
 
-| Флаг | Назначение |
-|------|-----------|
-| `--quick` / `--standard` / `--thorough` | профиль длительности |
-| `--no-net` | пропустить сеть |
-| `--net-mode speedtest\|latency\|iperf\|none` | режим сетевого теста |
-| `--iperf-host HOST` | адрес своего iperf3-сервера |
-| `--target DIR` | каталог для дискового теста (по умолчанию `.`) |
-| `--no-install` | ничего не ставить, использовать только наличные инструменты |
-| `--yes` | соглашаться на sudo без вопросов |
-| `--json PATH` | путь для JSON-отчёта |
-| `--only CSV` / `--skip CSV` | фильтр категорий: `cpu,ram,disk,net,apps,extras` |
-| `--no-color` | без цвета (также уважается `NO_COLOR`) |
-| `--compare A.json B.json` | сравнить два отчёта |
+| Flag | Purpose |
+|------|---------|
+| `--quick` / `--standard` / `--thorough` | duration profile |
+| `--no-net` | skip the network test |
+| `--net-mode speedtest\|latency\|iperf\|none` | network test mode |
+| `--iperf-host HOST` | address of your own iperf3 server |
+| `--target DIR` | directory for the disk test (default `.`) |
+| `--no-install` | do not install anything, use only the tools already present |
+| `--yes` | assume "yes" to the sudo prompt |
+| `--json PATH` | path for the JSON report |
+| `--only CSV` / `--skip CSV` | category filter: `cpu,ram,disk,net,apps,extras` |
+| `--no-color` | no color (also honors `NO_COLOR`) |
+| `--compare A.json B.json` | compare two reports |
 
-## Зависимости и root
+## Dependencies and root
 
-Скрипт сам определяет пакетный менеджер (`apt`/`dnf`/`yum`/`pacman`/`zypper`/`apk` на Linux, `brew` на macOS)
-и доставляет недостающее.
+The script auto-detects your package manager (`apt`/`dnf`/`yum`/`pacman`/`zypper`/`apk` on Linux, `brew` on macOS)
+and installs what is missing.
 
-- На Linux установка системных пакетов требует **root** — скрипт **один раз** спросит разрешение на `sudo`.
-- Если вы откажетесь — будет установлено/запущено только то, что доступно **без root** (например,
-  `speedtest-cli` через `pip --user`), остальное аккуратно пропустится с пометкой в «Заметках».
-- На macOS `brew` root не требует.
-- `--no-install` полностью отключает установку.
+- On Linux, installing system packages needs **root** — the script asks **once** for permission to use `sudo`.
+- If you decline, only what is available **without root** is installed (e.g. `speedtest-cli` via `pip --user`);
+  everything else is skipped gracefully and noted in the "Notes" section.
+- On macOS, `brew` does not need root.
+- `--no-install` disables installation entirely.
 
-Любая недоступная метрика просто пропускается (✓ выполнено, ∅ пропущено, ✗ ошибка) — скрипт не падает.
+Any unavailable metric is simply skipped (✓ done, ∅ skipped, ✗ error) — the script never crashes.
 
-## Требования
+## Requirements
 
-- `bash` (совместим с 3.2 — дефолтный на macOS), стандартные утилиты.
-- Для `--compare` нужен `python3` **или** `jq`.
-- Для латентности RAM нужен компилятор C (`cc`/`gcc`/`clang`) — иначе метрика пропускается.
+- `bash` (compatible with 3.2 — the macOS default) and standard utilities.
+- `--compare` needs `python3` **or** `jq`.
+- RAM latency needs a C compiler (`cc`/`gcc`/`clang`) — otherwise that metric is skipped.
 
-## JSON-отчёт
+## JSON report
 
 ```jsonc
 {
@@ -97,7 +111,7 @@ chmod +x benchx.sh
   "timestamp": "2026-06-13T09:49:21Z",
   "profile": "quick",
   "os": "Linux", "arch": "x86_64",
-  "system": { "CPU": "...", "Ядра/потоки": "...", "RAM": "..." },
+  "system": { "CPU": "...", "Cores/threads": "...", "RAM": "..." },
   "metrics": {
     "cpu": { "single_core_eps": {"value": 1234.5, "unit": "ev/s", "label": "Single-core", "higher_is_better": 1} },
     "ram": { "latency_ns": {"value": 72.6, "unit": "ns", "higher_is_better": 0} }
@@ -106,9 +120,13 @@ chmod +x benchx.sh
 }
 ```
 
-## Замечания по точности
+## Accuracy notes
 
-- Запускайте на незанятой машине; на «шумных соседях» (виртуализация) результаты прыгают — используйте `--thorough`.
-- Дисковый тест пишет временный файл в `--target` (по умолчанию текущий каталог) и удаляет его.
-- Speedtest обращается к внешним серверам Ookla; используйте `--net-mode iperf` или `--no-net`, если это нежелательно.
-- App-бенчмарки поднимают сервисы на `127.0.0.1` на случайном высоком порту и гасят их по завершении.
+- Run it on an idle machine; on noisy neighbors (virtualization) results vary — use `--thorough`.
+- The disk test writes a temporary file into `--target` (the current directory by default) and removes it.
+- Speedtest contacts external Ookla servers; use `--net-mode iperf` or `--no-net` if that is undesirable.
+- App benchmarks start services on `127.0.0.1` on a random high port and shut them down when finished.
+
+## License
+
+MIT
