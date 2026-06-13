@@ -36,6 +36,7 @@ VERSION="1.0.0"
 # ── глобальные настройки по умолчанию ──────────────────────────────────────────
 PROFILE="standard"          # quick | standard | thorough
 DO_INSTALL=1                # ставить недостающее
+REINSTALL=0                 # принудительно переустановить все нужные пакеты (--reinstall)
 ASSUME_YES=0                # не спрашивать про sudo
 NET_MODE="speedtest"        # speedtest | latency | iperf | none
 IPERF_HOST=""
@@ -67,6 +68,7 @@ benchx.sh — бенчмарк производительности сервер
   --iperf-host HOST                    адрес своего iperf3-сервера (для --net-mode iperf)
   --target DIR                         каталог для дискового теста (по умолчанию .)
   --no-install                         не устанавливать зависимости
+  --reinstall | --force-install        принудительно переустановить нужные пакеты (чинит «битый» dpkg после Ctrl-C)
   --yes                                соглашаться на sudo без вопросов
   --json PATH                          путь для JSON-отчёта
   --only CSV                           только эти категории: cpu,ram,disk,net,apps,extras
@@ -87,6 +89,7 @@ while [ $# -gt 0 ]; do
     --iperf-host) shift; IPERF_HOST="${1:-}"; NET_MODE="iperf" ;;
     --target) shift; TARGET_DIR="${1:-.}" ;;
     --no-install) DO_INSTALL=0 ;;
+    --reinstall|--force-install) REINSTALL=1 ;;
     --yes|-y) ASSUME_YES=1 ;;
     --json) shift; JSON_PATH="${1:-}" ;;
     --only) shift; ONLY_CATS="${1:-}" ;;
@@ -326,6 +329,71 @@ pkg_for() {
   esac
 }
 
+# Состояние системного пакета: installed | broken | absent.
+# Ловит «битый» пакет после прерванного apt (бинарь на месте, но пакет не сконфигурирован),
+# из-за чего `command -v` врёт, что всё установлено.
+pkg_state() {
+  local pkg="$1"
+  case "$PKG_MGR" in
+    apt)
+      local s; s="$(dpkg -s "$pkg" 2>/dev/null | awk -F': ' '/^Status:/{print $2; exit}')"
+      if [ -z "$s" ]; then echo absent
+      elif [ "$s" = "install ok installed" ]; then echo installed
+      else echo broken; fi ;;
+    dnf|yum|zypper) rpm -q "$pkg" >/dev/null 2>&1 && echo installed || echo absent ;;
+    pacman) pacman -Qi "$pkg" >/dev/null 2>&1 && echo installed || echo absent ;;
+    apk) apk info -e "$pkg" >/dev/null 2>&1 && echo installed || echo absent ;;
+    *) echo installed ;;   # менеджер неизвестен — не вмешиваемся
+  esac
+}
+
+# Установка Ookla speedtest CLI из официального tarball — БЕЗ root (бинарь в ~/.local/bin).
+# https://install.speedtest.net/app/cli/ookla-speedtest-1.2.0-linux-<arch>.tgz
+ensure_speedtest() {
+  tool_present speedtest && return 0
+  local userbin="$HOME/.local/bin"; mkdir -p "$userbin" 2>/dev/null
+  case ":$PATH:" in *":$userbin:"*) ;; *) PATH="$userbin:$PATH";; esac
+
+  if [ "$OS" = "Linux" ] && { have curl || have wget; }; then
+    local a url tgz
+    case "$ARCH" in
+      x86_64|amd64)  a="x86_64" ;;
+      aarch64|arm64) a="aarch64" ;;
+      armv7l|armhf)  a="armhf" ;;
+      armv6l|armel)  a="armel" ;;
+      i?86)          a="i386" ;;
+      *)             a="" ;;
+    esac
+    if [ -n "$a" ]; then
+      url="https://install.speedtest.net/app/cli/ookla-speedtest-1.2.0-linux-${a}.tgz"
+      tgz="$WORKDIR/ookla-speedtest.tgz"
+      spin_start "Установка Ookla speedtest ($a, без root)"
+      if { have curl && curl -fsSL "$url" -o "$tgz"; } || { have wget && wget -qO "$tgz" "$url"; }; then
+        tar -xzf "$tgz" -C "$WORKDIR" speedtest 2>/dev/null || tar -xzf "$tgz" -C "$WORKDIR" 2>/dev/null
+        if [ -f "$WORKDIR/speedtest" ]; then
+          install -m 0755 "$WORKDIR/speedtest" "$userbin/speedtest" 2>/dev/null \
+            || { cp "$WORKDIR/speedtest" "$userbin/speedtest" && chmod +x "$userbin/speedtest"; }
+          hash -r 2>/dev/null
+          tool_present speedtest && { spin_end ok; return 0; }
+        fi
+        spin_end fail "не удалось распаковать"
+      else
+        spin_end fail "загрузка не удалась"
+      fi
+    fi
+  fi
+
+  # запасной путь (тоже без root, кроме brew): speedtest-cli
+  if [ "$PKG_MGR" = brew ]; then
+    spin_start "Установка speedtest (brew)"; brew install speedtest-cli >"$WORKDIR/brew_st.log" 2>&1 && spin_end ok || spin_end fail
+  elif have pip3; then
+    spin_start "Установка speedtest-cli (pip --user)"
+    pip3 install --user speedtest-cli >"$WORKDIR/pip.log" 2>&1 && spin_end ok || spin_end fail
+  else
+    note "speedtest установить не удалось (нет curl/wget и pip3)."
+  fi
+}
+
 # ── установка зависимостей ──────────────────────────────────────────────────────
 WANT_TOOLS=()
 want() { WANT_TOOLS+=("$1"); }
@@ -363,7 +431,16 @@ install_deps() {
   local wl; wl="$(uniq_list "${WANT_TOOLS[@]}")"
 
   for t in $wl; do
-    if tool_present "$t"; then continue; fi
+    if [ "$REINSTALL" = 1 ]; then missing+=("$t"); continue; fi
+    if tool_present "$t"; then
+      # бинарь есть, но после прерванного apt пакет бывает «битым» — такой переустановим
+      pkg="$(pkg_for "$t")"
+      if [ -n "$pkg" ] && [ "$(pkg_state "$pkg")" = broken ]; then
+        note "Пакет '$pkg' в незавершённом состоянии — переустановлю."
+        missing+=("$t")
+      fi
+      continue
+    fi
     missing+=("$t")
   done
 
@@ -371,6 +448,7 @@ install_deps() {
     note "Все необходимые инструменты уже установлены."
     return 0
   fi
+  [ "$REINSTALL" = 1 ] && note "Режим --reinstall: принудительная переустановка нужных пакетов."
 
   if [ "$DO_INSTALL" = 0 ]; then
     note "Установка отключена (--no-install). Недостающее будет пропущено: ${missing[*]}"
@@ -382,12 +460,10 @@ install_deps() {
     return 0
   fi
 
-  # отделяем то, что ставится без root (pip --user speedtest-cli)
-  local need_pkg=() special=()
+  # speedtest ставим отдельно (Ookla tarball, без root); остальное — через пакетный менеджер
+  local need_pkg=() want_speedtest=0
   for t in "${missing[@]}"; do
-    if [ "$t" = "speedtest" ] && [ "$PKG_MGR" != "brew" ]; then
-      special+=("speedtest"); continue
-    fi
+    if [ "$t" = "speedtest" ]; then want_speedtest=1; continue; fi
     pkg="$(pkg_for "$t")"
     if [ -n "$pkg" ]; then need_pkg+=("$pkg")
     else INSTALL_FAILED+=("$t"); fi
@@ -411,28 +487,31 @@ install_deps() {
 
   if [ "${#need_pkg[@]}" -gt 0 ]; then
     local plist; plist="$(uniq_list "${need_pkg[@]}" | tr '\n' ' ')"
+    # команда установки (с учётом --reinstall)
+    local inst="$PKG_INSTALL"
+    if [ "$REINSTALL" = 1 ]; then
+      case "$PKG_MGR" in
+        apt)    inst="apt-get install -y --reinstall" ;;
+        pacman) inst="pacman -S --noconfirm" ;;
+        zypper) inst="zypper install -y --force" ;;
+      esac
+    fi
     spin_start "Установка пакетов: $plist"
     {
+      # ремонт «битого» dpkg после прерванного apt (частые Ctrl-C на Ubuntu)
+      if [ "$PKG_MGR" = apt ]; then
+        $SUDO dpkg --configure -a
+        $SUDO apt-get install -f -y
+      fi
       if [ -n "$PKG_UPDATE" ]; then $SUDO $PKG_UPDATE; fi
       # shellcheck disable=SC2086
-      $SUDO $PKG_INSTALL $plist
+      $SUDO $inst $plist
     } >"$WORKDIR/install.log" 2>&1
     if [ $? -eq 0 ]; then spin_end ok; else spin_end fail "см. $WORKDIR/install.log"; note "Часть пакетов не установилась — будут пропущены."; fi
   fi
 
-  # speedtest без root через pip --user
-  for t in "${special[@]:-}"; do
-    [ -z "$t" ] && continue
-    if [ "$t" = "speedtest" ] && ! tool_present speedtest; then
-      if have pip3; then
-        spin_start "Установка speedtest-cli (pip --user)"
-        pip3 install --user speedtest-cli >"$WORKDIR/pip.log" 2>&1 && spin_end ok || spin_end fail
-        # PATH для --user
-        local userbin="$HOME/.local/bin"
-        case ":$PATH:" in *":$userbin:"*) ;; *) PATH="$userbin:$PATH";; esac
-      fi
-    fi
-  done
+  # speedtest — официальный Ookla CLI из tarball (без root), с запасными путями внутри
+  [ "$want_speedtest" = 1 ] && ensure_speedtest
 }
 
 # ── сбор системной информации ───────────────────────────────────────────────────
@@ -1123,8 +1202,8 @@ compute_scores() {
 
   # каждый workload-индекс собирается из взвешенных компонентов; выводим только
   # если покрыто >=50% веса (иначе индекс из 1-2 метрик ввёл бы в заблуждение).
-  local s c proxy any_proxy=0
-  # mongodb-индекс теперь включает РЕАЛЬНЫЕ mongo-замеры (insert/find), а не только диск/CPU-прокси
+  local s c
+  # mongodb-индекс включает РЕАЛЬНЫЕ mongo-замеры (insert/find), а не только диск/CPU-прокси
   set -- nginx   "${i_sc:-NA}:0.30 ${i_aes:-NA}:0.20 ${i_mc:-NA}:0.20 ${i_membw:-NA}:0.10 ${i_nginx:-NA}:0.20" \
          redis   "${i_sc:-NA}:0.40 ${i_memlat:-NA}:0.25 ${i_membw:-NA}:0.10 ${i_redis:-NA}:0.25" \
          mongodb "${i_riops:-NA}:0.20 ${i_wiops:-NA}:0.15 ${i_mc:-NA}:0.15 ${i_membw:-NA}:0.10 ${i_mongoins:-NA}:0.25 ${i_mongofind:-NA}:0.15" \
@@ -1133,31 +1212,30 @@ compute_scores() {
   local NG="" RD="" MG="" ND=""
   while [ $# -ge 2 ]; do
     local name="$1" spec="$2"; shift 2
+    # индекс движка показываем ТОЛЬКО если его реальный бенчмарк действительно выполнялся,
+    # иначе «MongoDB-индекс» при недоступном mongod вводит в заблуждение
+    case "$name" in
+      nginx)   [ -n "$(get_metric apps nginx_rps)" ]                              || continue ;;
+      redis)   [ -n "$(get_metric apps redis_get_ops)" ]                          || continue ;;
+      nodejs)  [ -n "$(get_metric apps node_ops)$(get_metric apps node_http_rps)" ] || continue ;;
+      mongodb) [ -n "$(get_metric apps mongo_insert_ops)" ]                        || continue ;;
+    esac
     local out; out="$(wsum "$spec")"
     s="${out%% *}"; c="${out##* }"
     [ "$s" = "NA" ] && continue
     cov_ok "$c" 0.5 || continue
-    # proxy=1, если реального app-замера движка нет (индекс посчитан только по синтетике)
-    proxy=1
     case "$name" in
-      nginx)   [ -n "$(get_metric apps nginx_rps)" ] && proxy=0 ;;
-      redis)   [ -n "$(get_metric apps redis_get_ops)" ] && proxy=0 ;;
-      nodejs)  [ -n "$(get_metric apps node_ops)$(get_metric apps node_http_rps)" ] && proxy=0 ;;
-      mongodb) [ -n "$(get_metric apps mongo_insert_ops)" ] && proxy=0 ;;
-    esac
-    [ "$proxy" = 1 ] && any_proxy=1
-    case "$name" in
-      nginx)   NG="$s"; score_add nginx   "$s" "Nginx"   "$proxy" ;;
-      redis)   RD="$s"; score_add redis   "$s" "Redis"   "$proxy" ;;
-      mongodb) MG="$s"; score_add mongodb "$s" "MongoDB" "$proxy" ;;
-      nodejs)  ND="$s"; score_add nodejs  "$s" "Node.js" "$proxy" ;;
+      nginx)   NG="$s"; score_add nginx   "$s" "Nginx" ;;
+      redis)   RD="$s"; score_add redis   "$s" "Redis" ;;
+      mongodb) MG="$s"; score_add mongodb "$s" "MongoDB" ;;
+      nodejs)  ND="$s"; score_add nodejs  "$s" "Node.js" ;;
     esac
   done
 
   # общий композит — среднее доступных workload-индексов
   local comp; comp="$(wsum "${NG:-NA}:1 ${RD:-NA}:1 ${MG:-NA}:1 ${ND:-NA}:1")"
   s="${comp%% *}"
-  [ "$s" != "NA" ] && score_add overall "$s" "ОБЩИЙ" "$any_proxy"
+  [ "$s" != "NA" ] && score_add overall "$s" "ОБЩИЙ"
 }
 
 # ── рендер таблиц ───────────────────────────────────────────────────────────────
@@ -1377,14 +1455,30 @@ PY
 
 # ── очистка ──────────────────────────────────────────────────────────────────────
 cleanup() {
-  [ -n "$SPIN_PID" ] && { kill "$SPIN_PID" 2>/dev/null; wait "$SPIN_PID" 2>/dev/null; }
-  # подстраховка: гасим возможно осиротевшие серверы при Ctrl-C / TERM / die
+  [ -n "$SPIN_PID" ] && { kill "$SPIN_PID" 2>/dev/null; wait "$SPIN_PID" 2>/dev/null; SPIN_PID=""; }
+  # подстраховка: гасим серверы и любые фоновые задания (sysbench/fio/сторожа run_timeout)
   local p
   for p in $SERVER_PIDS; do kill "$p" 2>/dev/null; done
+  local jp; jp="$(jobs -p 2>/dev/null)"; [ -n "$jp" ] && kill $jp 2>/dev/null
   [ -n "${DISK_TESTDIR:-}" ] && [ -d "$DISK_TESTDIR" ] && rm -rf "$DISK_TESTDIR" 2>/dev/null
   [ -n "$WORKDIR" ] && [ -d "$WORKDIR" ] && rm -rf "$WORKDIR" 2>/dev/null
 }
-trap cleanup EXIT INT TERM
+
+# Ctrl-C / kill: чистимся И ВЫХОДИМ (иначе bash вернётся из обработчика и продолжит прогон)
+on_interrupt() {
+  trap '' INT TERM            # игнорируем повторные сигналы, пока убираемся
+  if [ -n "$SPIN_PID" ]; then kill "$SPIN_PID" 2>/dev/null; printf '\r\033[K'; fi
+  printf '\n%s⏹  Прервано — останавливаю бенчмарки и убираюсь...%s\n' "${C_YELLOW:-}" "${C_RESET:-}" >&2
+  # групповой сигнал (заберёт даже «внуков» из run_timeout) — ТОЛЬКО если мы лидер своей
+  # группы процессов, иначе под `curl|bash`/CI можно прибить родительскую оболочку
+  local pgid; pgid="$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')"
+  if [ -n "$pgid" ] && [ "$pgid" = "$$" ]; then kill -TERM 0 2>/dev/null; fi
+  cleanup
+  exit 130
+}
+
+trap cleanup EXIT
+trap on_interrupt INT TERM
 
 # ── main ─────────────────────────────────────────────────────────────────────────
 main() {
