@@ -14,8 +14,10 @@
 [English](README.md) · [简体中文](README.zh.md) · [Русский](README.ru.md) · [한국어](README.ko.md) · [日本語](README.ja.md) · [Deutsch](README.de.md) · [Italiano](README.it.md) · **Español**
 
 Un único script de bash que mide CPU, RAM, disco y red, además del rendimiento real de
-**nginx / redis / mongodb / node.js**. Instala sus propias dependencias, imprime un informe limpio en la
-terminal, guarda un informe JSON y puede comparar dos servidores. Está diseñado para ser **seguro de ejecutar en servidores de producción**.
+**nginx / redis / mongodb / node.js**. Por defecto **no instala nada**: una ejecución estándar no usa `sudo`,
+no hace preguntas y simplemente omite cualquier métrica cuya herramienta falte, por lo que es **seguro de
+ejecutar en servidores de producción**. Usa `--install` para optar por instalar los paquetes que falten. Imprime
+un informe limpio en la terminal, guarda un informe JSON y puede comparar dos servidores.
 
 ```bash
 chmod +x benchx.sh
@@ -75,7 +77,9 @@ si `mongod` no está disponible, no aparece ningún índice de MongoDB. Estos í
 ./benchx.sh --thorough            # exhaustivo (~15 min)
 ./benchx.sh --safe                # seguro para producción
 ./benchx.sh --dry-run             # imprime el plan y sale (sin cambios)
-./benchx.sh --no-install          # usa solo las herramientas ya presentes (sin instalar, sin preguntas)
+./benchx.sh --install             # opta por instalar los paquetes que falten (pregunta por cada paquete; avisa primero, pide sudo)
+./benchx.sh --install --yes       # instala todo sin preguntar por cada paquete (no interactivo)
+./benchx.sh --no-install          # comportamiento por defecto: usa solo las herramientas ya presentes (sin instalar, sin preguntas)
 ./benchx.sh --net-mode none       # omite la prueba de red
 ./benchx.sh --json server-a.json  # guarda el informe
 ./benchx.sh --only cpu,ram        # solo estas categorías
@@ -102,9 +106,10 @@ Imprime una tabla de métricas e índices con la diferencia porcentual (verde = 
 | `--quick` / `--thorough` | perfil de duración (por defecto standard, ~5 min) |
 | `--safe` | seguro para producción: sin instalaciones/sudo/cambios de servicios, baja prioridad de CPU/IO, solo latencia, omite la prueba de estrés, no sobrescribe archivos |
 | `--dry-run` | imprime exactamente qué ocurriría y sale (sin cambios, sin benchmarks) |
-| `--no-install` | ejecuta solo con las herramientas ya presentes: sin instalar, sin sudo, sin preguntas |
+| `--install` | opta por instalar los paquetes que falten: pregunta por **cada paquete individualmente** (para que elijas qué instalar y omitas el resto); primero muestra un aviso prominente de que (re)instalar puede dañar un servidor en vivo y pide `sudo` (una sola vez). Añade `--yes` para omitir esas preguntas e instalar todo |
+| `--no-install` | **comportamiento por defecto**: ejecuta solo con las herramientas ya presentes: sin instalar, sin sudo, sin preguntas |
 | `--reinstall` | reinstala a la fuerza los paquetes requeridos (también repara un dpkg roto tras un Ctrl-C) |
-| `--confirm-each` | pregunta antes de instalar/reinstalar cada paquete |
+| `--confirm-each` | pregunta antes de instalar/reinstalar cada paquete (`--install` ya lo implica) |
 | `--yes` / `-y` | asume «sí»: sin preguntas; también permite sobrescribir un archivo `--json` existente |
 | `--net-mode MODE` | modo de la prueba de red: `speedtest` \| `latency` \| `iperf` \| `none` |
 | `--iperf-host HOST` | dirección de tu propio servidor iperf3 (establece `--net-mode iperf`) |
@@ -117,12 +122,24 @@ Imprime una tabla de métricas e índices con la diferencia porcentual (verde = 
 
 ## Dependencias y root
 
-El script detecta automáticamente el gestor de paquetes (`apt`/`dnf`/`yum`/`pacman`/`zypper`/`apk` en Linux,
-`brew` en macOS) e instala lo que falta.
+Por defecto el script **no instala nada**: una ejecución estándar no usa `sudo`, no hace preguntas y simplemente
+omite cualquier métrica cuya herramienta falte. Esto hace que la ejecución por defecto sea segura en servidores de
+producción.
 
-- En Linux, instalar paquetes del sistema requiere **root** — el script pide permiso para usar `sudo` **una sola vez**.
-- Si lo rechazas (o con `--no-install`/`--safe`), solo se usa lo que está disponible **sin root**; todo lo demás se
-  omite con elegancia y se anota. La **CLI oficial de Ookla `speedtest` se instala sin root desde su tarball** (en `~/.local/bin`).
+Para instalar realmente los paquetes que falten debes optar explícitamente con **`--install`**. El script detecta
+automáticamente el gestor de paquetes (`apt`/`dnf`/`yum`/`pacman`/`zypper`/`apk` en Linux, `brew` en macOS) e instala
+lo que falta.
+
+- Con `--install`, el script muestra **primero un aviso prominente** de que (re)instalar paquetes puede dañar un
+  servidor en vivo (sobrescribir configuraciones en `/etc`, reiniciar o interrumpir servicios como redis/nginx/mongodb,
+  arrastrar actualizaciones que cambian el comportamiento) y, en una terminal interactiva, **pide confirmación antes de
+  hacer nada**. Luego **pregunta por cada paquete individualmente** antes de instalarlo (lo mismo que hace
+  `--confirm-each`), de modo que puedes elegir qué instalar y omitir el resto. Añade **`--yes`** junto a `--install`
+  para instalar todo sin esas preguntas por paquete (ejecuciones no interactivas).
+- En Linux, instalar paquetes del sistema requiere **root** — con `--install` el script pide permiso para usar `sudo`
+  **una sola vez**.
+- Por defecto (o con `--no-install`/`--safe`), solo se usa lo que ya está presente; todo lo demás se omite con elegancia
+  y se anota.
 - En macOS, `brew` no necesita root.
 - `--reinstall` repara un estado `dpkg` roto (p. ej., tras un `apt` interrumpido) y reinstala los paquetes.
   Muestra **primero un aviso prominente** — reinstalar puede sobrescribir configuraciones personalizadas en `/etc` y

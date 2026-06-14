@@ -6,15 +6,17 @@
 # plus real micro-benchmarks for redis / node / nginx / mongodb (hybrid).
 # Computes "workload indexes" (nginx/redis/mongodb/nodejs) to compare servers.
 #
-# Installs dependencies itself. If root is needed it asks once; if declined it does what it can without root.
+# Installs nothing by default — safe to run on a production server. Pass --install to allow
+# installing missing packages (asks for root once; prints a big warning first).
 #
 # Usage:
-#   ./benchx.sh                 # standard run (~5 min)
+#   ./benchx.sh                 # standard run (~5 min), installs nothing (production-safe default)
+#   ./benchx.sh --install       # allow installing missing packages (asks sudo; warns first)
 #   ./benchx.sh --quick         # fast (~1-2 min)
 #   ./benchx.sh --thorough      # thorough (~15 min)
 #   ./benchx.sh --safe          # production-safe (no installs, low priority, latency-only net)
 #   ./benchx.sh --net-mode none # without the network test
-#   ./benchx.sh --no-install    # install nothing, use only available tools (no prompts)
+#   ./benchx.sh --no-install    # (default) install nothing, use only available tools (no prompts)
 #   ./benchx.sh --yes           # do not ask about sudo (assume yes)
 #   ./benchx.sh --json out.json # path for the JSON report
 #   ./benchx.sh --only cpu,ram  # only the listed categories
@@ -35,7 +37,7 @@ VERSION="1.0.0"
 
 # ── global defaults ──────────────────────────────────────────
 PROFILE="standard"          # quick | standard | thorough
-DO_INSTALL=1                # install what's missing
+DO_INSTALL=0                # install missing packages? OFF by default so a run never touches a production server (enable with --install)
 REINSTALL=0                 # force-reinstall all required packages (--reinstall)
 CONFIRM_EACH=0              # prompt before installing/reinstalling each package (--confirm-each)
 SAFE=0                      # production-safe mode: no installs/sudo/service changes, low priority (--safe)
@@ -70,8 +72,13 @@ OPTIONS:
   --net-mode MODE                      network test: speedtest | latency | iperf | none
   --iperf-host HOST                    address of your own iperf3 server (sets --net-mode iperf)
   --target DIR                         directory for the disk test (default: .)
-  --no-install                         run with whatever tools are already present: install nothing,
-                                       no sudo, no prompts (missing metrics are just skipped)
+  --no-install                         DEFAULT: run with whatever tools are already present, install
+                                       nothing, no sudo, no prompts (missing metrics are just skipped)
+  --install                            OPT-IN: allow installing missing packages (needs sudo). Prints a
+                                       big warning first — package (re)installs can disrupt a production
+                                       server (config overwrites, service restarts). Off by default.
+                                       Asks about EACH package individually so you can choose what to
+                                       install (use --yes to install all without prompting).
   --reinstall                          force-reinstall required packages (fixes a broken dpkg after Ctrl-C)
   --confirm-each                       prompt before installing/reinstalling EACH package
   --safe                               production-safe: implies --no-install, low CPU/IO priority,
@@ -95,6 +102,7 @@ while [ $# -gt 0 ]; do
     --iperf-host) shift; IPERF_HOST="${1:-}"; NET_MODE="iperf"; NET_EXPLICIT=1 ;;
     --target) shift; TARGET_DIR="${1:-.}" ;;
     --no-install) DO_INSTALL=0 ;;
+    --install) DO_INSTALL=1 ;;
     --reinstall) REINSTALL=1 ;;
     --confirm-each) CONFIRM_EACH=1 ;;
     --safe) SAFE=1 ;;
@@ -110,6 +118,10 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
+
+# --install always asks about EACH package individually so the user can pick what to install.
+# (--yes still skips the prompts for non-interactive runs.)
+[ "$DO_INSTALL" = 1 ] && CONFIRM_EACH=1
 
 # production-safe mode: lock down anything that could mutate the system
 if [ "$SAFE" = 1 ]; then
@@ -471,6 +483,24 @@ danger_warning() {
   printf '%s%s  %s%s\n'  "$C_RED" "$C_BOLD" "$bar" "$C_RESET"
 }
 
+# Big, prominent warning shown once when --install is enabled: package installs can disrupt a server.
+install_warning() {
+  local pkgs="$1"
+  local bar="━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  printf '\n%s%s  %s%s\n'  "$C_RED" "$C_BOLD" "$bar" "$C_RESET"
+  printf '%s%s   ⚠   --install ENABLED — PACKAGE (RE)INSTALLS CAN BREAK A LIVE SERVER%s\n' "$C_RED" "$C_BOLD" "$C_RESET"
+  printf '%s%s  %s%s\n'  "$C_RED" "$C_BOLD" "$bar" "$C_RESET"
+  printf '%s  Installing/upgrading system packages on this machine may:%s\n' "$C_YELLOW" "$C_RESET"
+  printf '    %s•%s OVERWRITE customized config files in /etc\n' "$C_YELLOW" "$C_RESET"
+  printf '    %s•%s RESTART or disrupt running services (redis, nginx, mongodb, ...) — downtime\n' "$C_YELLOW" "$C_RESET"
+  printf '    %s•%s pull in upgrades that change behaviour your production setup relies on\n' "$C_YELLOW" "$C_RESET"
+  printf '  %sThe production-safe way to run is WITHOUT --install (the default), which installs%s\n' "$C_DIM" "$C_RESET"
+  printf '  %snothing and simply skips any metric whose tool is missing.%s\n' "$C_DIM" "$C_RESET"
+  printf '  %sYou will be asked about EACH of these packages individually:%s\n' "$C_BOLD" "$C_RESET"
+  printf '    %s%s%s\n' "$C_RED$C_BOLD" "$pkgs" "$C_RESET"
+  printf '%s%s  %s%s\n'  "$C_RED" "$C_BOLD" "$bar" "$C_RESET"
+}
+
 install_deps() {
   local missing=() t pkg
   build_wishlist
@@ -497,13 +527,23 @@ install_deps() {
   [ "$REINSTALL" = 1 ] && note "--reinstall mode: force-reinstalling required packages."
 
   if [ "$DO_INSTALL" = 0 ]; then
-    note "Installation disabled (--no-install). Missing tools will be skipped: ${missing[*]}"
+    note "Installation disabled (default, production-safe). Missing tools are skipped: ${missing[*]}"
+    note "Pass --install to allow installing them (will warn first; needs sudo)."
     return 0
   fi
 
   if [ "$PKG_MGR" = "none" ]; then
     note "No package manager found. Skipping installation: ${missing[*]}"
     return 0
+  fi
+
+  # --install is enabled and there is real work to do: show the big warning, then confirm on a real tty.
+  install_warning "${missing[*]}"
+  if [ "$ASSUME_YES" = 0 ]; then
+    if confirm "Continue and let --install modify packages on this server?"; then :; else
+      note "--install aborted by user. Nothing was installed; missing tools will be skipped: ${missing[*]}"
+      return 0
+    fi
   fi
 
   # speedtest is installed separately (Ookla tarball, no root); the rest via the package manager
@@ -591,7 +631,13 @@ install_deps() {
   fi
 
   # speedtest — official Ookla CLI from tarball (no root), with fallbacks inside
-  [ "$want_speedtest" = 1 ] && ensure_speedtest
+  if [ "$want_speedtest" = 1 ]; then
+    if [ "$CONFIRM_EACH" = 1 ] && [ "$ASSUME_YES" = 0 ] && ! confirm "Install the Ookla 'speedtest' CLI (no root, into ~/.local/bin)?"; then
+      note "Skipped speedtest (declined by user)."
+    else
+      ensure_speedtest
+    fi
+  fi
 }
 
 # ── system information ───────────────────────────────────────────────────
@@ -1611,9 +1657,10 @@ do_dry_run() {
     pkg="$(pkg_for "$t")"; [ -n "$pkg" ] && sysneed="$sysneed $pkg"
   done
   if [ "$DO_INSTALL" = 0 ]; then
-    printf '  Install: %sDISABLED%s — missing tools will be skipped:%s\n' "$C_YELLOW" "$C_RESET" "${miss:- none}"
+    printf '  Install: %sDISABLED (default, production-safe)%s — missing tools will be skipped:%s\n' "$C_YELLOW" "$C_RESET" "${miss:- none}"
+    [ -n "${miss# }" ] && printf '    (pass %s--install%s to install them — will warn first; needs sudo)\n' "$C_BOLD" "$C_RESET"
   else
-    printf '  Would install via %s:%s\n' "$PKG_MGR" "${sysneed:- none}"
+    printf '  Install: %s--install ENABLED%s — would install via %s (will warn first):%s\n' "$C_RED$C_BOLD" "$C_RESET" "$PKG_MGR" "${sysneed:- none}"
     [ -n "$sysneed" ] && [ "$NEEDS_ROOT" = 1 ] && printf '    (would request sudo once)\n'
   fi
   printf '  JSON report: %s\n' "${JSON_PATH:-<none>}"

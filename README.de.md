@@ -14,9 +14,10 @@
 [English](README.md) · [简体中文](README.zh.md) · [Русский](README.ru.md) · [한국어](README.ko.md) · [日本語](README.ja.md) · **Deutsch** · [Italiano](README.it.md) · [Español](README.es.md)
 
 Ein einzelnes Bash-Skript, das CPU, RAM, Festplatte und Netzwerk misst — sowie die reale Performance von
-**nginx / redis / mongodb / node.js**. Es installiert seine Abhängigkeiten selbst, gibt einen aufgeräumten
-Terminal-Bericht aus, speichert einen JSON-Bericht und kann zwei Server vergleichen. Es ist so gebaut, dass es
-**sicher auf Produktionsservern laufen** kann.
+**nginx / redis / mongodb / node.js**. Es gibt einen aufgeräumten Terminal-Bericht aus, speichert einen
+JSON-Bericht und kann zwei Server vergleichen. **Standardmäßig installiert es nichts** — kein `sudo`, keine
+Abfragen; fehlende Werkzeuge werden einfach übersprungen, sodass ein Standardlauf **sicher auf Produktionsservern**
+ist. Mit **`--install`** wählen Sie aktiv die Installation fehlender Pakete.
 
 ```bash
 chmod +x benchx.sh
@@ -76,7 +77,9 @@ Server B für redis?“ zu beantworten.
 ./benchx.sh --thorough            # gründlich (~15 Min.)
 ./benchx.sh --safe                # produktionssicher
 ./benchx.sh --dry-run             # Plan ausgeben und beenden (keine Änderungen)
-./benchx.sh --no-install          # nur vorhandene Werkzeuge nutzen (nichts installieren, keine Abfragen)
+./benchx.sh --no-install          # Standardverhalten: nur vorhandene Werkzeuge nutzen (nichts installieren, keine Abfragen)
+./benchx.sh --install             # aktiv erlauben, fehlende Pakete zu installieren (warnt zuerst, braucht sudo, fragt vor jedem Paket einzeln nach)
+./benchx.sh --install --yes       # alles ohne Einzelabfragen installieren (nicht-interaktiv)
 ./benchx.sh --net-mode none       # Netzwerktest überspringen
 ./benchx.sh --json server-a.json  # Bericht speichern
 ./benchx.sh --only cpu,ram        # nur diese Kategorien
@@ -103,9 +106,10 @@ Gibt eine Tabelle mit Metriken und Indizes samt prozentualer Differenz aus (grü
 | `--quick` / `--thorough` | Dauer-Profil (Standard: standard, ~5 Min.) |
 | `--safe` | produktionssicher: keine Installationen/sudo/Dienständerungen, niedrige CPU/IO-Priorität, nur Latenz, überspringt Stresstest, überschreibt keine Dateien |
 | `--dry-run` | gibt genau aus, was passieren würde, und beendet sich (keine Änderungen, keine Benchmarks) |
-| `--no-install` | nur mit vorhandenen Werkzeugen laufen: nichts installieren, kein sudo, keine Abfragen |
+| `--no-install` | **Standardverhalten**: nur mit vorhandenen Werkzeugen laufen: nichts installieren, kein sudo, keine Abfragen |
+| `--install` | aktiv erlauben, fehlende Pakete zu installieren: zeigt **zuerst eine deutliche Warnung**, fragt **einmal** nach `sudo` und fragt dann **vor jedem Paket einzeln** nach (so wählen Sie, was installiert wird); `--yes` überspringt diese Abfragen und installiert alles |
 | `--reinstall` | erzwingt Neuinstallation der benötigten Pakete (repariert auch ein kaputtes dpkg nach Ctrl-C) |
-| `--confirm-each` | vor jeder Paket-(Neu-)Installation nachfragen |
+| `--confirm-each` | vor jeder Paket-(Neu-)Installation nachfragen (von `--install` bereits impliziert) |
 | `--yes` / `-y` | „ja“ annehmen: keine Abfragen; erlaubt auch das Überschreiben einer vorhandenen `--json`-Datei |
 | `--net-mode MODE` | Netzwerktest-Modus: `speedtest` \| `latency` \| `iperf` \| `none` |
 | `--iperf-host HOST` | Adresse Ihres eigenen iperf3-Servers (setzt `--net-mode iperf`) |
@@ -118,12 +122,25 @@ Gibt eine Tabelle mit Metriken und Indizes samt prozentualer Differenz aus (grü
 
 ## Abhängigkeiten und root
 
-Das Skript erkennt den Paketmanager automatisch (`apt`/`dnf`/`yum`/`pacman`/`zypper`/`apk` unter Linux,
-`brew` unter macOS) und installiert das Fehlende.
+**Standardmäßig installiert das Skript nichts.** Ein einfacher `./benchx.sh`-Lauf installiert keine Pakete, nutzt
+kein `sudo` und stellt keine Abfragen; jede Metrik, deren Werkzeug fehlt, wird einfach übersprungen. Das macht einen
+Standardlauf sicher für Produktionsserver.
 
-- Unter Linux benötigt die Installation von Systempaketen **root** — das Skript fragt **einmal** nach der Erlaubnis für `sudo`.
-- Bei Ablehnung (oder mit `--no-install`/`--safe`) wird nur verwendet, was **ohne root** verfügbar ist; der Rest wird
-  sauber übersprungen und vermerkt. Die offizielle **Ookla-`speedtest`-CLI wird ohne root aus ihrem Tarball** (nach `~/.local/bin`) installiert.
+Um tatsächlich fehlende Pakete zu installieren, müssen Sie dies mit **`--install`** aktiv erlauben. In diesem Fall
+erkennt das Skript den Paketmanager automatisch (`apt`/`dnf`/`yum`/`pacman`/`zypper`/`apk` unter Linux, `brew` unter
+macOS) und installiert das Fehlende.
+
+- Mit `--install` zeigt das Skript **zuerst eine große, deutliche rote Warnung** — eine (Neu-)Installation von Paketen
+  kann einen Live-Server beschädigen: `/etc`-Konfigs überschreiben, Dienste wie redis/nginx/mongodb neu starten oder
+  stören und verhaltensändernde Upgrades einspielen. Auf einem interaktiven Terminal fragt es danach nach Bestätigung,
+  bevor irgendetwas geschieht.
+- Mit `--install` fragt das Skript **vor jedem Paket einzeln** nach, bevor es installiert wird, sodass Sie auswählen
+  können, welche Pakete Sie installieren und welche Sie überspringen (dasselbe Verhalten wie `--confirm-each`, das von
+  `--install` nun impliziert wird). Mit zusätzlichem `--yes` entfallen diese Einzelabfragen und alles wird installiert
+  (für nicht-interaktive Läufe).
+- Unter Linux benötigt die Installation von Systempaketen **root** — mit `--install` fragt das Skript **einmal** nach der Erlaubnis für `sudo`.
+- Ohne `--install` (das Standardverhalten, ebenso bei `--no-install`/`--safe`) wird nur verwendet, was bereits
+  vorhanden ist; der Rest wird sauber übersprungen und vermerkt.
 - Unter macOS benötigt `brew` kein root.
 - `--reinstall` repariert einen kaputten `dpkg`-Zustand (z. B. nach einem abgebrochenen `apt`) und installiert Pakete neu.
   Es zeigt **zuerst eine deutliche Warnung** — eine Neuinstallation kann angepasste `/etc`-Konfigs überschreiben und Dienste

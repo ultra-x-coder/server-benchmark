@@ -14,7 +14,7 @@
 [English](README.md) · **简体中文** · [Русский](README.ru.md) · [한국어](README.ko.md) · [日本語](README.ja.md) · [Deutsch](README.de.md) · [Italiano](README.it.md) · [Español](README.es.md)
 
 一个 bash 脚本，用于测量 CPU、内存、磁盘、网络，以及 **nginx / redis / mongodb / node.js** 的真实性能。
-它会自行安装依赖，在终端打印整洁的报告，保存 JSON 报告，并能对比两台服务器。其设计目标是**可安全地在生产服务器上运行**。
+它**默认不安装任何依赖**，在终端打印整洁的报告，保存 JSON 报告，并能对比两台服务器。默认运行**可安全地在生产服务器上运行**（不安装、不 sudo、不询问，缺少工具的指标会自动跳过）；如需安装缺失的软件包，请使用 `--install` 显式开启。
 
 ```bash
 chmod +x benchx.sh
@@ -71,7 +71,9 @@ chmod +x benchx.sh
 ./benchx.sh --thorough            # 彻底（约 15 分钟）
 ./benchx.sh --safe                # 生产安全
 ./benchx.sh --dry-run             # 打印计划并退出（不做任何更改）
-./benchx.sh --no-install          # 仅使用已存在的工具（不安装、不询问）
+./benchx.sh --no-install          # 仅使用已存在的工具（默认行为：不安装、不询问）
+./benchx.sh --install             # 允许安装缺失的软件包（先警告，需要 sudo，逐个软件包询问）
+./benchx.sh --install --yes       # 安装全部，不逐个询问（非交互式运行）
 ./benchx.sh --net-mode none       # 跳过网络测试
 ./benchx.sh --json server-a.json  # 保存报告
 ./benchx.sh --only cpu,ram        # 仅这些类别
@@ -98,7 +100,8 @@ chmod +x benchx.sh
 | `--quick` / `--thorough` | 时长档位（默认 standard，约 5 分钟） |
 | `--safe` | 生产安全：不安装/不 sudo/不改服务，低 CPU/IO 优先级，网络仅延迟，跳过压力测试，不覆盖文件 |
 | `--dry-run` | 打印将要发生的一切，然后退出（不更改、不运行基准） |
-| `--no-install` | 仅用已存在的工具运行：不安装、不 sudo、不询问 |
+| `--no-install` | 默认行为：仅用已存在的工具运行，不安装、不 sudo、不询问 |
+| `--install` | 选择启用安装缺失的软件包：先显示醒目警告，请求 `sudo`，并在安装每个软件包前逐个询问（这样你可以挑选要装哪些、跳过其余），即隐含 `--confirm-each`；加上 `--yes` 可跳过这些逐个询问 |
 | `--reinstall` | 强制重装所需软件包（同时修复 Ctrl-C 后损坏的 dpkg） |
 | `--confirm-each` | 安装/重装每个软件包前询问 |
 | `--yes` / `-y` | 假定“是”：不询问；同时允许覆盖已有的 `--json` 文件 |
@@ -113,11 +116,17 @@ chmod +x benchx.sh
 
 ## 依赖与 root
 
-脚本会自动检测包管理器（Linux 上的 `apt`/`dnf`/`yum`/`pacman`/`zypper`/`apk`，macOS 上的 `brew`）并安装缺失项。
+脚本**默认不安装任何软件包** —— 它只使用已存在的工具，缺失工具的指标会被优雅跳过。
+这使得默认运行可安全地在生产服务器上执行（不安装、不 sudo、不询问）。
 
-- 在 Linux 上安装系统软件包需要 **root** —— 脚本会**仅一次**请求使用 `sudo` 的许可。
-- 若拒绝（或使用 `--no-install`/`--safe`），只使用**无需 root** 即可获得的工具，其余优雅跳过并注明。
-  官方 **Ookla `speedtest` CLI 会从其 tarball 无需 root 安装**（到 `~/.local/bin`）。
+- 仅当显式传入 **`--install`** 时，脚本才会检测包管理器（Linux 上的 `apt`/`dnf`/`yum`/`pacman`/`zypper`/`apk`，
+  macOS 上的 `brew`）并安装缺失项。此时它会：
+  - **先显示一条醒目的红色警告** —— 软件包（重）安装可能破坏运行中的服务器（覆盖 `/etc` 配置、
+    重启或中断 redis/nginx/mongodb 等服务、拉入改变行为的升级）；
+  - 在 Linux 上安装系统软件包需要 **root** —— 脚本会**仅一次**请求使用 `sudo` 的许可；
+  - 在交互式终端上，会在执行任何操作前请求确认；
+  - **会在安装每个软件包前逐个询问**（这样你可以挑选要安装哪些、跳过其余 —— 与 `--confirm-each` 行为相同，`--install` 现已隐含该行为）；加上 **`--yes`** 则跳过这些逐个询问，直接全部安装（用于非交互式运行）。
+- 不使用 `--install`（即默认，或显式 `--no-install`/`--safe`）时，只使用已存在的工具，其余优雅跳过并注明。
 - 在 macOS 上 `brew` 不需要 root。
 - `--reinstall` 修复损坏的 `dpkg` 状态（例如被中断的 `apt` 之后）并强制重装软件包。
   它会**先显示醒目的警告** —— 重装可能覆盖自定义的 `/etc` 配置并重启服务；不会删除你的数据，

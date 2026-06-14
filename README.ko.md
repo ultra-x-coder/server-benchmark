@@ -14,8 +14,8 @@
 [English](README.md) · [简体中文](README.zh.md) · [Русский](README.ru.md) · **한국어** · [日本語](README.ja.md) · [Deutsch](README.de.md) · [Italiano](README.it.md) · [Español](README.es.md)
 
 CPU, RAM, 디스크, 네트워크는 물론 **nginx / redis / mongodb / node.js** 의 실제 성능까지 측정하는 단일 bash 스크립트입니다.
-의존성을 스스로 설치하고, 깔끔한 터미널 리포트를 출력하며, JSON 리포트를 저장하고, 두 서버를 비교할 수 있습니다.
-**운영 서버에서도 안전하게 실행**되도록 설계되었습니다.
+**기본적으로는 아무것도 설치하지 않으며**(설치·sudo·질문 없이 도구가 없는 지표는 그냥 생략), 깔끔한 터미널 리포트를 출력하고, JSON 리포트를 저장하며, 두 서버를 비교할 수 있습니다.
+기본 실행은 **운영 서버에서도 안전**합니다. 누락된 패키지를 설치하려면 `--install` 로 명시적으로 활성화해야 합니다.
 
 ```bash
 chmod +x benchx.sh
@@ -73,7 +73,9 @@ chmod +x benchx.sh
 ./benchx.sh --thorough            # 정밀 (~15분)
 ./benchx.sh --safe                # 운영 안전
 ./benchx.sh --dry-run             # 계획을 출력하고 종료 (아무것도 변경하지 않음)
-./benchx.sh --no-install          # 이미 있는 도구만 사용 (설치·질문 없음)
+./benchx.sh --no-install          # 이미 있는 도구만 사용 (기본 동작: 설치·질문 없음)
+./benchx.sh --install             # 누락된 패키지 설치 허용 (각 패키지마다 질문, 경고 표시 + sudo 필요)
+./benchx.sh --install --yes       # 패키지별 질문 없이 모두 설치 (비대화형)
 ./benchx.sh --net-mode none       # 네트워크 테스트 생략
 ./benchx.sh --json server-a.json  # 리포트 저장
 ./benchx.sh --only cpu,ram        # 해당 분류만
@@ -100,9 +102,10 @@ chmod +x benchx.sh
 | `--quick` / `--thorough` | 실행 시간 프로파일 (기본 standard, ~5분) |
 | `--safe` | 운영 안전: 설치/sudo/서비스 변경 없음, 낮은 CPU/IO 우선순위, 지연만 측정, 스트레스 테스트 생략, 파일 비덮어쓰기 |
 | `--dry-run` | 무엇이 일어날지 출력하고 종료 (변경·벤치마크 없음) |
-| `--no-install` | 이미 있는 도구만으로 실행: 설치·sudo·질문 없음 |
+| `--no-install` | **기본 동작**: 이미 있는 도구만으로 실행, 아무것도 설치하지 않음 (설치·sudo·질문 없음) |
+| `--install` | 누락된 패키지 설치를 허용하는 옵트인: 먼저 눈에 띄는 경고를 표시하고 `sudo` 로 root 권한을 요청. **각 패키지를 설치하기 전에 개별적으로 질문하므로 무엇을 설치할지 직접 고를 수 있음**(`--confirm-each` 와 동일한 동작을 이미 포함); `--yes` 를 함께 쓰면 이 패키지별 질문 없이 모두 설치 |
 | `--reinstall` | 필요한 패키지 강제 재설치 (Ctrl-C 후 손상된 dpkg 도 복구) |
-| `--confirm-each` | 각 패키지 설치/재설치 전에 질문 |
+| `--confirm-each` | 각 패키지 설치/재설치 전에 질문 (`--install` 은 이미 이 동작을 포함함) |
 | `--yes` / `-y` | "예" 가정: 질문 없음; 기존 `--json` 파일 덮어쓰기도 허용 |
 | `--net-mode MODE` | 네트워크 테스트 모드: `speedtest` \| `latency` \| `iperf` \| `none` |
 | `--iperf-host HOST` | 자체 iperf3 서버 주소 (`--net-mode iperf` 설정) |
@@ -115,13 +118,16 @@ chmod +x benchx.sh
 
 ## 의존성과 root
 
-스크립트는 패키지 관리자(Linux 의 `apt`/`dnf`/`yum`/`pacman`/`zypper`/`apk`, macOS 의 `brew`)를 자동 감지하여 누락된 것을 설치합니다.
+**기본적으로 스크립트는 아무것도 설치하지 않습니다** —— sudo 도 쓰지 않고, 질문도 하지 않으며, 도구가 없는 지표는 그냥 생략합니다. 그래서 기본 실행은 운영 서버에서도 안전합니다.
 
-- Linux 에서 시스템 패키지 설치에는 **root** 가 필요합니다 —— 스크립트는 `sudo` 사용 허가를 **한 번만** 묻습니다.
-- 거부하면(또는 `--no-install`/`--safe`), **root 없이** 사용 가능한 것만 쓰고 나머지는 우아하게 생략·기록합니다.
+- 누락된 패키지를 실제로 설치하려면 **`--install`** 로 명시적으로 활성화해야 합니다. 이 경우 스크립트는 패키지 관리자(Linux 의 `apt`/`dnf`/`yum`/`pacman`/`zypper`/`apk`, macOS 의 `brew`)를 자동 감지합니다.
+- `--install` 사용 시 스크립트는 **먼저 크고 눈에 띄는 빨간 경고**를 표시합니다 —— 패키지 (재)설치는 라이브 서버를 망가뜨릴 수 있습니다(`/etc` 설정 덮어쓰기, redis/nginx/mongodb 같은 서비스 재시작·중단, 동작이 바뀌는 업그레이드 적용). 이어서 대화형 터미널에서 실행을 진행하기 전에 확인을 묻습니다.
+- `--install` 은 **각 패키지를 설치하기 전에 개별적으로 질문**하므로, 어떤 패키지를 설치하고 어떤 것을 건너뛸지 직접 선택할 수 있습니다(`--confirm-each` 와 동일한 동작을 이미 포함합니다). 패키지별 질문 없이 모두 설치하려면(비대화형 실행) `--yes` 를 함께 사용하세요.
+- Linux 에서 시스템 패키지 설치에는 **root** 가 필요합니다 —— `--install` 사용 시 스크립트는 `sudo` 사용 허가를 **한 번만** 묻습니다.
+- `--no-install`(기본 동작) 또는 `--safe` 에서는 **root 없이** 사용 가능한 것만 쓰고 나머지는 우아하게 생략·기록합니다.
   공식 **Ookla `speedtest` CLI 는 tarball 에서 root 없이** 설치됩니다(`~/.local/bin` 에).
 - macOS 에서 `brew` 는 root 가 필요 없습니다.
-- `--reinstall` 은 손상된 `dpkg` 상태(예: 중단된 `apt` 이후)를 복구하고 패키지를 강제 재설치합니다.
+- `--reinstall` 은 손상된 `dpkg` 상태(예: 중단된 `apt` 이후)를 복구하고 패키지를 강제 재설치합니다(설치 동작을 활성화하므로 `--install` 처럼 취급됩니다).
   먼저 **눈에 띄는 경고**를 표시합니다 —— 재설치는 사용자 정의 `/etc` 설정을 덮어쓰고 서비스를 재시작할 수 있습니다.
   데이터를 삭제하지는 않지만, 운영 서버에서는 `--no-install`/`--safe` 를 권장합니다.
 

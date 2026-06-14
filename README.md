@@ -14,8 +14,10 @@
 **English** · [简体中文](README.zh.md) · [Русский](README.ru.md) · [한국어](README.ko.md) · [日本語](README.ja.md) · [Deutsch](README.de.md) · [Italiano](README.it.md) · [Español](README.es.md)
 
 A single bash script that measures CPU, RAM, disk, and network, plus the real-world performance of
-**nginx / redis / mongodb / node.js**. It installs its own dependencies, prints a clean terminal report,
-saves a JSON report, and can compare two servers. It is designed to be **safe to run on production servers**.
+**nginx / redis / mongodb / node.js**. By default it **installs nothing** — it uses no `sudo`, asks no
+prompts, and simply skips any metric whose tool is missing, so a plain run is **safe on production servers**.
+Pass **`--install`** to opt in to installing missing packages. It prints a clean terminal report,
+saves a JSON report, and can compare two servers.
 
 ```bash
 chmod +x benchx.sh
@@ -75,7 +77,9 @@ for redis".
 ./benchx.sh --thorough            # thorough (~15 min)
 ./benchx.sh --safe                # production-safe
 ./benchx.sh --dry-run             # print the plan and exit (no changes, no benchmarks)
-./benchx.sh --no-install          # use only tools already present (install nothing, no prompts)
+./benchx.sh --install             # opt in to installing missing packages (warns first, needs sudo, asks about each package)
+./benchx.sh --install --yes       # install everything without per-package prompts (non-interactive)
+./benchx.sh --no-install          # default: use only tools already present (install nothing, no prompts)
 ./benchx.sh --net-mode none       # skip the network test
 ./benchx.sh --json server-a.json  # save report
 ./benchx.sh --only cpu,ram        # only these categories
@@ -102,9 +106,10 @@ Prints a table of metrics and indexes with the percentage difference (green = B 
 | `--quick` / `--thorough` | duration profile (default: standard, ~5 min) |
 | `--safe` | production-safe: no installs/sudo/service changes, low CPU/IO priority, latency-only network, skips the stress test, never overwrites files |
 | `--dry-run` | print exactly what would happen, then exit (no changes, no benchmarks) |
-| `--no-install` | run with whatever tools are already present: install nothing, no sudo, no prompts |
-| `--reinstall` | force-reinstall required packages (also repairs a broken dpkg after a Ctrl-C) |
-| `--confirm-each` | prompt before installing/reinstalling each package |
+| `--install` | opt in to installing missing packages: prints a prominent warning first, asks for `sudo`, then asks about **each package individually** so you can choose what to install (use `--yes` to skip those prompts) |
+| `--no-install` | **default**: run with whatever tools are already present — install nothing, no sudo, no prompts |
+| `--reinstall` | force-reinstall required packages (also repairs a broken dpkg after a Ctrl-C); requires `--install` |
+| `--confirm-each` | prompt before installing/reinstalling each package (`--install` already implies this) |
 | `--yes` / `-y` | assume "yes": no prompts; also allows overwriting an existing `--json` file |
 | `--net-mode MODE` | network test mode: `speedtest` \| `latency` \| `iperf` \| `none` |
 | `--iperf-host HOST` | address of your own iperf3 server (sets `--net-mode iperf`) |
@@ -117,17 +122,22 @@ Prints a table of metrics and indexes with the percentage difference (green = B 
 
 ## Dependencies and root
 
-The script auto-detects your package manager (`apt`/`dnf`/`yum`/`pacman`/`zypper`/`apk` on Linux, `brew` on macOS)
-and installs what is missing.
+**By default the script installs nothing.** A plain `./benchx.sh` run uses no `sudo`, asks no prompts, and
+simply skips any metric whose tool is missing — this makes a default run safe on production servers. This is
+exactly what `--no-install`/`--safe` document.
 
-- On Linux, installing system packages needs **root** — the script asks **once** for permission to use `sudo`.
-- If you decline (or pass `--no-install`/`--safe`), only what is available **without root** is used; everything
-  else is skipped gracefully and noted. The official **Ookla `speedtest` CLI is installed from its tarball
-  without root** (into `~/.local/bin`).
+- To actually install missing packages, pass **`--install`**. It auto-detects your package manager
+  (`apt`/`dnf`/`yum`/`pacman`/`zypper`/`apk` on Linux, `brew` on macOS) and installs what is missing.
+- `--install` first prints a **big, prominent warning** that package (re)installs can break a live server —
+  they can overwrite customized `/etc` configs, restart or disrupt services (redis/nginx/mongodb), and pull in
+  behaviour-changing upgrades. It then asks about **each package individually**, so you can choose which ones
+  to install and skip the rest. Pass **`--yes`** alongside **`--install`** to skip these per-package prompts and
+  install everything (handy for non-interactive runs).
+- On Linux, installing system packages needs **root** — `--install` asks **once** for permission to use `sudo`.
 - On macOS, `brew` does not need root.
-- `--reinstall` repairs a broken `dpkg` state (e.g. after an interrupted `apt`) and force-reinstalls packages.
-  It shows a **prominent warning first** — reinstalling can overwrite customized `/etc` configs and restart
-  services; it does not delete your data, but on a production server prefer `--no-install`/`--safe`.
+- `--reinstall` (requires `--install`) repairs a broken `dpkg` state (e.g. after an interrupted `apt`) and
+  force-reinstalls packages, with the same prominent warning first. It does not delete your data, but on a
+  production server prefer the default (`--no-install`/`--safe`).
 
 Any unavailable metric is simply skipped (✓ done, ∅ skipped, ✗ error) — the script never crashes.
 
