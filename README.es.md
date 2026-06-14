@@ -130,6 +130,14 @@ Para instalar realmente los paquetes que falten debes optar explícitamente con 
 automáticamente el gestor de paquetes (`apt`/`dnf`/`yum`/`pacman`/`zypper`/`apk` en Linux, `brew` en macOS) e instala
 lo que falta.
 
+> **TIP:** Cuando se ejecuta **sin `--install`** (el comportamiento por defecto, seguro para producción, modo no-install),
+> el script imprime un aviso informativo cerca del inicio de su salida que recuerda que se está ejecutando en modo
+> no-install, por lo que **algunas métricas pueden omitirse**. Si faltan herramientas, métricas de apps como
+> `redis` / `nodejs` / `nginx` / `mongodb` y la prueba de speedtest pueden no estar disponibles en un servidor recién
+> instalado. Vuelve a ejecutarlo con **`--install`** para instalar las herramientas que falten y recopilar el conjunto
+> **completo** de resultados (avisa primero; requiere `sudo`); añade **`-y`** para instalar todo sin preguntar por cada
+> paquete: `./benchx.sh --install -y`. El aviso **no aparece** cuando se usa `--install` o `--safe`.
+
 - Con `--install`, el script muestra **primero un aviso prominente** de que (re)instalar paquetes puede dañar un
   servidor en vivo (sobrescribir configuraciones en `/etc`, reiniciar o interrumpir servicios como redis/nginx/mongodb,
   arrastrar actualizaciones que cambian el comportamiento) y, en una terminal interactiva, **pide confirmación antes de

@@ -12,6 +12,7 @@
 # Usage:
 #   ./benchx.sh                 # standard run (~5 min), installs nothing (production-safe default)
 #   ./benchx.sh --install       # allow installing missing packages (asks sudo; warns first)
+#   ./benchx.sh --install -y    # install all missing packages without a prompt per package
 #   ./benchx.sh --quick         # fast (~1-2 min)
 #   ./benchx.sh --thorough      # thorough (~15 min)
 #   ./benchx.sh --safe          # production-safe (no installs, low priority, latency-only net)
@@ -78,13 +79,15 @@ OPTIONS:
                                        big warning first — package (re)installs can disrupt a production
                                        server (config overwrites, service restarts). Off by default.
                                        Asks about EACH package individually so you can choose what to
-                                       install (use --yes to install all without prompting).
+                                       install. Combine with -y to install everything without prompts:
+                                       ./benchx.sh --install -y
   --reinstall                          force-reinstall required packages (fixes a broken dpkg after Ctrl-C)
   --confirm-each                       prompt before installing/reinstalling EACH package
   --safe                               production-safe: implies --no-install, low CPU/IO priority,
                                        latency-only network, skips stress test, never overwrites files
   --dry-run                            print exactly what would happen, then exit (no changes, no benchmarks)
-  --yes | -y                           assume "yes": no prompts; allow overwriting an existing --json file
+  --yes | -y                           assume "yes": no prompts. With --install, installs every missing
+                                       package without asking per-package; also allows overwriting --json
   --json PATH                          path for the JSON report
   --only CSV                           only these categories: cpu,ram,disk,net,apps,extras
   --skip CSV                           skip these categories
@@ -1635,6 +1638,16 @@ safe_banner() {
   printf '    %s✓%s disk test checks free space first and self-limits\n'                        "$C_GREEN" "$C_RESET"
 }
 
+# Shown once on a default (no-install) run: let the user know --install collects more data.
+install_hint_banner() {
+  printf '%s%s  ℹ  TIP — running in no-install mode (default): some metrics may be skipped%s\n' "$C_CYAN" "$C_BOLD" "$C_RESET"
+  printf '    %s•%s missing tools are skipped, so metrics like redis / nodejs / nginx / mongodb\n'  "$C_CYAN" "$C_RESET"
+  printf '      and the speedtest can be unavailable on a bare server\n'
+  printf '    %s•%s re-run with %s--install%s to install the missing tools and collect the FULL\n'  "$C_CYAN" "$C_RESET" "$C_BOLD" "$C_RESET$C_CYAN"
+  printf '      set of results (you are warned first; needs sudo)\n'
+  printf '    %s•%s add %s-y%s to install everything without a prompt per package:  %s./benchx.sh --install -y%s\n' "$C_CYAN" "$C_RESET" "$C_BOLD" "$C_RESET$C_CYAN" "$C_BOLD" "$C_RESET"
+}
+
 # --dry-run: show exactly what would happen, change nothing
 do_dry_run() {
   section "🔎" "DRY RUN — plan only; nothing will be installed, run, or written"
@@ -1692,6 +1705,10 @@ main() {
     renice 19 "$$" >/dev/null 2>&1
     [ "$OS" = "Linux" ] && have ionice && ionice -c3 -p "$$" >/dev/null 2>&1
     safe_banner
+    printf '\n'
+  elif [ "$DO_INSTALL" = 0 ]; then
+    # default no-install run: tell the user that --install (with -y) collects more data
+    install_hint_banner
     printf '\n'
   fi
   [ "$(id -u)" = 0 ] && note "Running as root — not required for benchmarking; a normal user is safer."

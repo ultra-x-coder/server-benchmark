@@ -140,7 +140,13 @@ macOS) und installiert das Fehlende.
   (für nicht-interaktive Läufe).
 - Unter Linux benötigt die Installation von Systempaketen **root** — mit `--install` fragt das Skript **einmal** nach der Erlaubnis für `sudo`.
 - Ohne `--install` (das Standardverhalten, ebenso bei `--no-install`/`--safe`) wird nur verwendet, was bereits
-  vorhanden ist; der Rest wird sauber übersprungen und vermerkt.
+  vorhanden ist; der Rest wird sauber übersprungen und vermerkt. In diesem No-Install-Modus zeigt das Skript nahe
+  am Anfang seiner Ausgabe einen informativen **TIP**-Banner an: Er weist darauf hin, dass im No-Install-Modus
+  gelaufen wird und deshalb einige Metriken übersprungen werden können — fehlende Werkzeuge bedeuten, dass App-Metriken
+  wie redis / nodejs / nginx / mongodb sowie der Speedtest auf einem nackten Server nicht verfügbar sein können. Ein
+  erneuter Lauf mit `--install` installiert die fehlenden Werkzeuge (warnt zuerst, braucht sudo) und erfasst den
+  **vollständigen** Satz an Ergebnissen; mit zusätzlichem `-y` wird alles ohne Einzelabfrage pro Paket installiert:
+  `./benchx.sh --install -y`. Der Banner erscheint **nicht**, wenn `--install` oder `--safe` verwendet wird.
 - Unter macOS benötigt `brew` kein root.
 - `--reinstall` repariert einen kaputten `dpkg`-Zustand (z. B. nach einem abgebrochenen `apt`) und installiert Pakete neu.
   Es zeigt **zuerst eine deutliche Warnung** — eine Neuinstallation kann angepasste `/etc`-Konfigs überschreiben und Dienste

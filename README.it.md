@@ -126,6 +126,16 @@ Per impostazione predefinita lo script **non installa nulla**: usa solo gli stru
 e senza porre domande, e salta con eleganza ogni metrica il cui strumento manca (questo è il comportamento di
 `--no-install`/`--safe`). La **CLI ufficiale Ookla `speedtest` viene installata senza root dal suo tarball** (in `~/.local/bin`).
 
+Quando lo script viene eseguito **senza `--install`** (la modalità no-install, predefinita e sicura per la produzione),
+stampa vicino all'inizio dell'output un **banner informativo TIP**. Il banner spiega che:
+
+- è in esecuzione in modalità no-install, quindi alcune metriche potrebbero essere saltate;
+- gli strumenti mancanti significano che le metriche delle app come **redis / nodejs / nginx / mongodb** e lo **speedtest** possono non essere disponibili su un server spoglio;
+- rieseguire con **`--install`** installa gli strumenti mancanti e raccoglie l'**insieme completo** dei risultati (con avviso preventivo; richiede `sudo`);
+- aggiungere **`-y`** installa tutto senza una domanda per ogni pacchetto: `./benchx.sh --install -y`.
+
+Il banner **non** appare quando si usa `--install` o `--safe`.
+
 Per installare davvero i pacchetti mancanti devi acconsentire con **`--install`**. In tal caso lo script rileva
 automaticamente il gestore di pacchetti (`apt`/`dnf`/`yum`/`pacman`/`zypper`/`apk` su Linux, `brew` su macOS) e:
 

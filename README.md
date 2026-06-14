@@ -126,6 +126,14 @@ Prints a table of metrics and indexes with the percentage difference (green = B 
 simply skips any metric whose tool is missing — this makes a default run safe on production servers. This is
 exactly what `--no-install`/`--safe` document.
 
+> **TIP:** When you run the script **without `--install`** (the production-safe default, no-install mode), it
+> prints an informational TIP banner near the top of its output. The banner reminds you that it is running in
+> no-install mode, so some metrics may be skipped: on a bare server the missing tools mean app metrics like
+> **redis / nodejs / nginx / mongodb** and the **speedtest** can be unavailable. Re-running with **`--install`**
+> installs the missing tools and collects the **full** set of results (you are warned first; it needs `sudo`).
+> Add **`-y`** to install everything without a per-package prompt: `./benchx.sh --install -y`. The banner does
+> **not** appear when `--install` or `--safe` is used.
+
 - To actually install missing packages, pass **`--install`**. It auto-detects your package manager
   (`apt`/`dnf`/`yum`/`pacman`/`zypper`/`apk` on Linux, `brew` on macOS) and installs what is missing.
 - `--install` first prints a **big, prominent warning** that package (re)installs can break a live server —
