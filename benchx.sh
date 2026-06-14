@@ -562,8 +562,17 @@ install_deps() {
   if [ "${#need_pkg[@]}" -gt 0 ] && [ "$NEEDS_ROOT" = 1 ]; then
     if [ "$ASSUME_YES" = 0 ]; then
       printf '\n%s⚙  Installation requires root (%s).%s\n' "$C_YELLOW" "$PKG_MGR" "$C_RESET"
-      printf '   Packages: %s%s%s\n' "$C_BOLD" "$(uniq_list "${need_pkg[@]}" | tr '\n' ' ')" "$C_RESET"
-      printf '   Install via sudo? [y/N] '
+      if [ "$CONFIRM_EACH" = 1 ]; then
+        # the per-package prompts come right after — make clear this step installs NOTHING yet,
+        # it only grants sudo so each package can then be confirmed one at a time.
+        printf '   %sCandidate packages — you will be asked about EACH one individually next%s\n' "$C_DIM" "$C_RESET"
+        printf '   %s(nothing is installed at this step):%s\n' "$C_DIM" "$C_RESET"
+        printf '     %s%s%s\n' "$C_BOLD" "$(uniq_list "${need_pkg[@]}" | tr '\n' ' ')" "$C_RESET"
+        printf '   Grant sudo so the per-package prompts can proceed? [y/N] '
+      else
+        printf '   Packages: %s%s%s\n' "$C_BOLD" "$(uniq_list "${need_pkg[@]}" | tr '\n' ' ')" "$C_RESET"
+        printf '   Install via sudo? [y/N] '
+      fi
       local ans=""
       # only prompt on a real interactive tty; in CI / curl|bash don't block, decline sudo
       if [ -t 0 ] && [ -r /dev/tty ]; then read -r ans </dev/tty || ans=""; else ans=""; fi
